@@ -27,14 +27,54 @@ pub type Value {
   Map(dict.Dict(Value, Value))
 }
 
+fn value_name(value: Value) -> String {
+  case value {
+    Nan -> "Nan"
+    Null -> "Null"
+    Infinity -> "Infinity"
+    Integer(_) -> "Integer"
+    Boolean(_) -> "Boolean"
+    Double(_) -> "Double"
+    BigNumber(_) -> "BigNumber"
+    NegativeInfinity -> "NegativeInfinity"
+    Push(_) -> "Push"
+    BulkError(_) -> "BulkError"
+    BulkString(_) -> "BulkString"
+    Array(_) -> "Array"
+    Set(_) -> "Set"
+    SimpleError(_) -> "SimpleError"
+    IntegerAsDouble(_) -> "IntegerAsDouble"
+    SimpleString(_) -> "SimpleString"
+    Map(_) -> "Map"
+  }
+}
+
+fn values_to_string(values: List(Value)) -> String {
+  case values {
+    [] -> "[]"
+    [value] -> value_name(value)
+    values ->
+      values
+      |> list.map(value_name)
+      |> string.join(", ")
+  }
+}
+
+pub fn error_string(expected expected: String, got got: List(Value)) -> String {
+  "Expected " <> expected <> ", got " <> values_to_string(got)
+}
+
 // ----- Encoding ----- //
 
-pub fn encode_value(value: Value) -> BitArray {
-  encode_internal(value)
+pub fn encode_command(parts: List(String)) {
+  parts
+  |> list.map(BulkString)
+  |> Array
+  |> encode_value
   |> bit_array.from_string
 }
 
-fn encode_internal(value: Value) -> String {
+fn encode_value(value: Value) -> String {
   case value {
     Nan -> nan()
     Null -> null()
@@ -148,7 +188,7 @@ fn array(value: List(Value)) {
   }
   <> "\r\n"
   <> {
-    list.map(value, encode_internal)
+    list.map(value, encode_value)
     |> string.join("")
   }
 }
@@ -164,7 +204,7 @@ fn map(value: dict.Dict(Value, Value)) {
   <> {
     value
     |> dict.to_list
-    |> list.map(fn(item) { encode_internal(item.0) <> encode_internal(item.1) })
+    |> list.map(fn(item) { encode_value(item.0) <> encode_value(item.1) })
     |> string.join("")
   }
 }
@@ -178,7 +218,7 @@ fn push(value: List(Value)) {
   }
   <> "\r\n"
   <> {
-    list.map(value, encode_internal)
+    list.map(value, encode_value)
     |> string.join("")
   }
 }
@@ -193,7 +233,7 @@ fn set(value: set.Set(Value)) {
   }
   <> "\r\n"
   <> {
-    list.map(value, encode_internal)
+    list.map(value, encode_value)
     |> string.join("")
   }
 }

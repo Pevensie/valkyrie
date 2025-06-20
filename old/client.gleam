@@ -53,7 +53,11 @@ fn worker_spec(
     )
 
     use _ <- result.try(
-      do_command(socket, command.hello(protocol_version, auth_options), timeout)
+      do_command(
+        socket,
+        command.hello(protocol_version, auth_options) |> protocol.encode_command,
+        timeout,
+      )
       |> result.replace_error("Unable to send HELLO command"),
     )
 

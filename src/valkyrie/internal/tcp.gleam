@@ -13,7 +13,7 @@ pub fn send(socket: mug.Socket, packet: BitArray) {
 
 pub fn new_selector() {
   process.new_selector()
-  |> mug.select_tcp_messages(mapper)
+  |> mug.select_tcp_messages(decode_tcp_message)
 }
 
 pub fn receive(
@@ -36,7 +36,7 @@ pub fn receive_forever(
   process.selector_receive_forever(selector)
 }
 
-fn mapper(message: mug.TcpMessage) -> Result(BitArray, mug.Error) {
+fn decode_tcp_message(message: mug.TcpMessage) -> Result(BitArray, mug.Error) {
   case message {
     mug.Packet(_, packet) -> Ok(packet)
     mug.SocketClosed(_) -> Error(mug.Closed)
