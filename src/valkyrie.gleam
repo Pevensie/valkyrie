@@ -1,29 +1,44 @@
 //// All timeouts are in milliseconds
 
+import bath
+import gleam/bit_array
+import gleam/erlang/process
 import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option
-import gleam/otp/actor
 import gleam/result
+import mug
 
-import valkyrie/error
-import valkyrie/internal/client
-import valkyrie/internal/command
 import valkyrie/internal/protocol
+import valkyrie/internal/tcp
 
-pub type Message =
-  client.Message
+const protocol_version = 3
 
 /// The configuration for a pool of connections to the database.
 pub type Config {
-  Config(host: String, port: Int, timeout: Int, pool_size: Int, auth: Auth)
+  Config(host: String, port: Int, auth: Auth)
 }
 
 pub type Auth {
   NoAuth
   PasswordOnly(String)
   UsernameAndPassword(username: String, password: String)
+}
+
+pub opaque type Connection {
+  Single(socket: mug.Socket)
+  Pooled(bath.Pool(mug.Socket))
+}
+
+pub type Error {
+  NotFound
+  ProtocolError(String)
+  ConnectionError
+  Timeout
+  TcpError(mug.Error)
+  ServerError(String)
+  PoolError(bath.ApplyError)
 }
 
 fn auth_to_options_list(auth: Auth) -> List(String) {
@@ -35,13 +50,7 @@ fn auth_to_options_list(auth: Auth) -> List(String) {
 }
 
 pub fn default_config() -> Config {
-  Config(
-    host: "localhost",
-    port: 6379,
-    timeout: 1024,
-    pool_size: 3,
-    auth: NoAuth,
-  )
+  Config(host: "localhost", port: 6379, auth: NoAuth)
 }
 
 pub fn host(config: Config, host: String) -> Config {
@@ -52,17 +61,286 @@ pub fn port(config: Config, port: Int) -> Config {
   Config(..config, port:)
 }
 
-pub fn timeout(config: Config, timeout: Int) -> Config {
-  Config(..config, timeout:)
-}
-
-pub fn size(config: Config, size: Int) -> Config {
-  Config(..config, pool_size: size)
-}
-
 pub fn auth(config: Config, auth: Auth) -> Config {
   Config(..config, auth:)
 }
+
+// ------------------------------- //
+// ----- Lifecycle functions ----- //
+// ------------------------------- //
+
+pub fn create_connection(
+  config: Config,
+  timeout: Int,
+) -> Result(Connection, Error) {
+  use socket <- result.try(
+    tcp.connect(config.host, config.port, timeout)
+    |> result.map_error(TcpError),
+  )
+
+  let conn = Single(socket)
+
+  use _ <- result.try(execute(
+    conn,
+    [
+      "HELLO",
+      int.to_string(protocol_version),
+      ..auth_to_options_list(config.auth)
+    ],
+    timeout,
+  ))
+
+  Ok(conn)
+}
+
+fn start_pool(config: Config, pool_size: Int) -> Result(Connection, Error) {
+  todo
+}
+
+fn supervised_pool(config: Config, pool_size: Int) -> Result(Connection, Error) {
+  todo
+}
+
+pub fn shutdown(conn: Connection) -> Result(Nil, Nil) {
+  case conn {
+    Single(socket) -> mug.shutdown(socket) |> result.replace_error(Nil)
+    _ -> todo as "Handle shutting down pools"
+  }
+}
+
+// ------------------------------- //
+// ----- Execution functions ----- //
+// ------------------------------- //
+
+fn execute(conn: Connection, command: List(String), timeout: Int) {
+  case conn {
+    Single(socket) -> do_execute(socket, command, timeout)
+    Pooled(pool) -> {
+      bath.apply(pool, timeout, fn(socket) {
+        case do_execute(socket, command, timeout) {
+          Ok(value) -> bath.keep() |> bath.returning(Ok(value))
+          Error(error) ->
+            case error {
+              ConnectionError | ProtocolError(_) | TcpError(_) -> {
+                bath.discard()
+                |> bath.returning(Error(error))
+              }
+              NotFound | ServerError(_) | Timeout -> {
+                bath.keep()
+                |> bath.returning(Error(error))
+              }
+              PoolError(_) -> panic as "unreachable"
+            }
+        }
+      })
+      |> result.map_error(PoolError)
+      |> result.flatten
+    }
+  }
+}
+
+fn do_execute(socket: mug.Socket, command: List(String), timeout: Int) {
+  use _ <- result.try(
+    tcp.send(socket, protocol.encode_command(command))
+    |> result.map_error(TcpError),
+  )
+
+  let selector = tcp.new_selector()
+  use reply <- result.try(socket_receive(socket, selector, <<>>, now(), timeout))
+  case reply {
+    [protocol.SimpleError(error)] | [protocol.BulkError(error)] ->
+      Error(ServerError(error))
+    value -> Ok(value)
+  }
+}
+
+fn socket_receive(
+  socket: mug.Socket,
+  selector: process.Selector(Result(BitArray, mug.Error)),
+  storage: BitArray,
+  start_time: Int,
+  timeout: Int,
+) -> Result(List(protocol.Value), Error) {
+  case protocol.decode_value(storage) {
+    Ok(value) -> Ok(value)
+    Error(_) -> {
+      case now() - start_time >= timeout * 1_000_000 {
+        True -> Error(Timeout)
+        False ->
+          case tcp.receive(socket, selector, timeout) {
+            Error(tcp_error) -> Error(TcpError(tcp_error))
+            Ok(packet) ->
+              socket_receive(
+                socket,
+                selector,
+                bit_array.append(storage, packet),
+                start_time,
+                timeout,
+              )
+          }
+      }
+    }
+  }
+}
+
+// TODO: make sure this is always converted to nanoseconds
+@external(erlang, "erlang", "monotonic_time")
+fn now() -> Int
+
+// ---------------------------------- //
+// ----- Return value functions ----- //
+// ---------------------------------- //
+
+fn expect_cursor(cursor_string: String) -> Result(Int, Error) {
+  case int.parse(cursor_string) {
+    Ok(value) -> Ok(value)
+    Error(_) ->
+      Error(ProtocolError("Expected integer cursor, got " <> cursor_string))
+  }
+}
+
+fn expect_cursor_and_array(values: List(protocol.Value)) {
+  case values {
+    [
+      protocol.Array([protocol.BulkString(new_cursor_str), protocol.Array(keys)]),
+    ] -> {
+      use new_cursor <- result.try(expect_cursor(new_cursor_str))
+      use array <- result.try(
+        list.try_map(keys, fn(item) {
+          case item {
+            protocol.BulkString(value) -> Ok(value)
+            _ ->
+              Error(
+                ProtocolError(
+                  protocol.error_string(expected: "string", got: [item]),
+                ),
+              )
+          }
+        }),
+      )
+      Ok(#(array, new_cursor))
+    }
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "cursor and array",
+          got: values,
+        )),
+      )
+  }
+}
+
+fn expect_integer(value: List(protocol.Value)) -> Result(Int, Error) {
+  case value {
+    [protocol.Integer(n)] -> Ok(n)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(expected: "integer", got: value)),
+      )
+  }
+}
+
+fn expect_float(value: List(protocol.Value)) -> Result(Float, Error) {
+  case value {
+    [protocol.BulkString(new)] ->
+      float.parse(new)
+      |> result.replace_error(ProtocolError("Invalid float: " <> new))
+    _ ->
+      Error(ProtocolError(protocol.error_string(expected: "float", got: value)))
+  }
+}
+
+fn expect_simple_string(value: List(protocol.Value)) -> Result(String, Error) {
+  case value {
+    [protocol.SimpleString(str)] -> Ok(str)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "simple string",
+          got: value,
+        )),
+      )
+  }
+}
+
+fn expect_any_string(value: List(protocol.Value)) -> Result(String, Error) {
+  case value {
+    [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "string or null",
+          got: value,
+        )),
+      )
+  }
+}
+
+fn expect_nullable_bulk_string(value) {
+  case value {
+    [protocol.BulkString(str)] -> Ok(str)
+    [protocol.Null] -> Error(NotFound)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "bulk string or null",
+          got: value,
+        )),
+      )
+  }
+}
+
+fn expect_any_nullable_string(
+  value: List(protocol.Value),
+) -> Result(String, Error) {
+  case value {
+    [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
+    [protocol.Null] -> Error(NotFound)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "string or null",
+          got: value,
+        )),
+      )
+  }
+}
+
+fn expect_key_type(value) {
+  case value {
+    [protocol.SimpleString(str)] ->
+      case str {
+        "set" -> Ok(Set)
+        "list" -> Ok(List)
+        "zset" -> Ok(ZSet)
+        "hash" -> Ok(Hash)
+        "string" -> Ok(String)
+        "stream" -> Ok(Stream)
+        _ -> Error(ProtocolError("Invalid key type: " <> str))
+      }
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(expected: "key type", got: value)),
+      )
+  }
+}
+
+// ---------------------------------- //
+// ----- Escape hatch functions ----- //
+// ---------------------------------- //
+
+/// Execute a command not already covered by `valkyrie`.
+pub fn custom(
+  conn: Connection,
+  parts: List(String),
+  timeout: Int,
+) -> Result(List(protocol.Value), Error) {
+  execute(conn, parts, timeout)
+}
+
+// ---------------------------- //
+// ----- Scalar functions ----- //
+// ---------------------------- //
 
 pub type KeyType {
   Set
@@ -73,736 +351,462 @@ pub type KeyType {
   Stream
 }
 
-pub type ExpireCondition {
-  NX
-  XX
-  GT
-  LT
-}
-
-pub fn start(config: Config) -> Result(client.Client, actor.StartError) {
-  client.start(
-    config.host,
-    config.port,
-    config.timeout,
-    config.pool_size,
-    auth_to_options_list(config.auth),
-  )
-}
-
-pub fn shutdown(client: client.Client) -> Result(Nil, Nil) {
-  client.shutdown(client)
-}
-
-/// Use this if you need to construct a command not already covered by `valkyrie`
-pub fn execute(
-  client: client.Client,
-  parts: List(String),
-  timeout: Int,
-) -> Result(List(protocol.Value), error.Error) {
-  parts
-  |> command.custom
-  |> client.execute(client, _, timeout)
-}
-
-/// use this if you need to construct a blocking command not already covered by `valkyrie`
-pub fn execute_blocking(client, parts: List(String), timeout: Int) {
-  parts
-  |> command.custom
-  |> client.execute_blocking(client, _, timeout)
+fn key_type_to_string(key_type: KeyType) {
+  case key_type {
+    Set -> "set"
+    List -> "list"
+    ZSet -> "zset"
+    Hash -> "hash"
+    String -> "string"
+    Stream -> "stream"
+  }
 }
 
 /// see [here](https://redis.io/commands/keys)!
-pub fn keys(client, pattern: String, timeout: Int) {
-  command.keys(pattern)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Array(array)] ->
-        list.try_map(array, fn(item) {
-          case item {
-            protocol.BulkString(value) -> Ok(value)
-            _ -> Error(error.RESPError)
-          }
-        })
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn keys(
+  conn: Connection,
+  pattern: String,
+  timeout: Int,
+) -> Result(List(String), Error) {
+  use value <- result.try(
+    ["KEYS", pattern]
+    |> execute(conn, _, timeout),
+  )
+
+  case value {
+    [protocol.Array(array)] ->
+      list.try_map(array, fn(item) {
+        case item {
+          protocol.BulkString(value) -> Ok(value)
+          _ ->
+            Error(
+              ProtocolError(
+                protocol.error_string(expected: "string", got: [item]),
+              ),
+            )
+        }
+      })
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "string array",
+          got: value,
+        )),
+      )
+  }
 }
 
 /// see [here](https://redis.io/commands/scan)!
-pub fn scan(client, cursor: Int, count: Int, timeout: Int) {
-  command.scan(cursor, count)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [
-        protocol.Array([
-          protocol.BulkString(new_cursor_str),
-          protocol.Array(keys),
-        ]),
-      ] ->
-        case int.parse(new_cursor_str) {
-          Ok(new_cursor) -> {
-            use array <- result.then(
-              list.try_map(keys, fn(item) {
-                case item {
-                  protocol.BulkString(value) -> Ok(value)
-                  _ -> Error(error.RESPError)
-                }
-              }),
-            )
-            Ok(#(array, new_cursor))
-          }
-          Error(Nil) -> Error(error.RESPError)
-        }
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn scan(
+  conn: Connection,
+  cursor: Int,
+  count: Int,
+  timeout: Int,
+) -> Result(#(List(String), Int), Error) {
+  ["SCAN", int.to_string(cursor), "COUNT", int.to_string(count)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
 }
 
 /// see [here](https://redis.io/commands/scan)!
 pub fn scan_pattern(
-  client,
+  conn: Connection,
   cursor: Int,
   pattern: String,
   count: Int,
   timeout: Int,
-) {
-  command.scan_pattern(cursor, pattern, count)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [
-        protocol.Array([
-          protocol.BulkString(new_cursor_str),
-          protocol.Array(keys),
-        ]),
-      ] ->
-        case int.parse(new_cursor_str) {
-          Ok(new_cursor) -> {
-            use array <- result.then(
-              list.try_map(keys, fn(item) {
-                case item {
-                  protocol.BulkString(value) -> Ok(value)
-                  _ -> Error(error.RESPError)
-                }
-              }),
-            )
-            Ok(#(array, new_cursor))
-          }
-          Error(Nil) -> Error(error.RESPError)
-        }
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+) -> Result(#(List(String), Int), Error) {
+  [
+    "SCAN",
+    int.to_string(cursor),
+    "MATCH",
+    pattern,
+    "COUNT",
+    int.to_string(count),
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
 }
 
 /// see [here](https://redis.io/commands/scan)!
 pub fn scan_with_type(
-  client,
+  conn: Connection,
   cursor: Int,
   key_type: KeyType,
   count: Int,
   timeout: Int,
-) {
-  case key_type {
-    Set -> command.scan_with_type(cursor, "set", count)
-    List -> command.scan_with_type(cursor, "list", count)
-    ZSet -> command.scan_with_type(cursor, "zset", count)
-    Hash -> command.scan_with_type(cursor, "hash", count)
-    String -> command.scan_with_type(cursor, "string", count)
-    Stream -> command.scan_with_type(cursor, "stream", count)
-  }
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [
-        protocol.Array([
-          protocol.BulkString(new_cursor_str),
-          protocol.Array(keys),
-        ]),
-      ] ->
-        case int.parse(new_cursor_str) {
-          Ok(new_cursor) -> {
-            use array <- result.then(
-              list.try_map(keys, fn(item) {
-                case item {
-                  protocol.BulkString(value) -> Ok(value)
-                  _ -> Error(error.RESPError)
-                }
-              }),
-            )
-            Ok(#(array, new_cursor))
-          }
-          Error(Nil) -> Error(error.RESPError)
-        }
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+) -> Result(#(List(String), Int), Error) {
+  [
+    "SCAN",
+    int.to_string(cursor),
+    "COUNT",
+    int.to_string(count),
+    "TYPE",
+    key_type_to_string(key_type),
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
 }
 
 /// see [here](https://redis.io/commands/scan)!
 pub fn scan_pattern_with_type(
-  client,
+  conn: Connection,
   cursor: Int,
   key_type: KeyType,
   pattern: String,
   count: Int,
   timeout: Int,
-) {
-  case key_type {
-    Set -> command.scan_pattern_with_type(cursor, "set", pattern, count)
-    List -> command.scan_pattern_with_type(cursor, "list", pattern, count)
-    ZSet -> command.scan_pattern_with_type(cursor, "zset", pattern, count)
-    Hash -> command.scan_pattern_with_type(cursor, "hash", pattern, count)
-    String -> command.scan_pattern_with_type(cursor, "string", pattern, count)
-    Stream -> command.scan_pattern_with_type(cursor, "stream", pattern, count)
-  }
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [
-        protocol.Array([
-          protocol.BulkString(new_cursor_str),
-          protocol.Array(keys),
-        ]),
-      ] ->
-        case int.parse(new_cursor_str) {
-          Ok(new_cursor) -> {
-            use array <- result.then(
-              list.try_map(keys, fn(item) {
-                case item {
-                  protocol.BulkString(value) -> Ok(value)
-                  _ -> Error(error.RESPError)
-                }
-              }),
-            )
-            Ok(#(array, new_cursor))
-          }
-          Error(Nil) -> Error(error.RESPError)
-        }
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+) -> Result(#(List(String), Int), Error) {
+  [
+    "SCAN",
+    int.to_string(cursor),
+    "MATCH",
+    pattern,
+    "COUNT",
+    int.to_string(count),
+    "TYPE",
+    key_type_to_string(key_type),
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
 }
 
 /// see [here](https://redis.io/commands/exists)!
-pub fn exists(client, keys: List(String), timeout: Int) {
-  command.exists(keys)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn exists(client, keys: List(String), timeout: Int) -> Result(Int, Error) {
+  ["EXISTS", ..keys]
+  |> execute(client, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/get)!
 pub fn get(client, key: String, timeout: Int) {
-  command.get(key)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
-      [protocol.Null] -> Error(error.NotFound)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+  ["GET", key]
+  |> execute(client, _, timeout)
+  |> result.try(expect_any_nullable_string)
 }
 
 /// see [here](https://redis.io/commands/mget)!
 pub fn mget(client, keys: List(String), timeout: Int) {
-  command.mget(keys)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Array(array)] ->
-        list.try_map(array, fn(item) {
-          case item {
-            protocol.BulkString(str) -> Ok(str)
-            protocol.Null -> Error(error.NotFound)
-            _ -> Error(error.RESPError)
-          }
-        })
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+  use value <- result.try(
+    ["MGET", ..keys]
+    |> execute(client, _, timeout),
+  )
+
+  case value {
+    [protocol.Array(array)] ->
+      list.try_map(array, fn(item) {
+        case item {
+          protocol.BulkString(str) -> Ok(str)
+          protocol.Null -> Error(NotFound)
+          _ ->
+            Error(
+              ProtocolError(
+                protocol.error_string(expected: "string or null", got: [item]),
+              ),
+            )
+        }
+      })
+    _ ->
+      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+  }
 }
 
 /// see [here](https://redis.io/commands/append)!
 pub fn append(client, key: String, value: String, timeout: Int) {
-  command.append(key, value)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+  ["APPEND", key, value]
+  |> execute(client, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub type SetExistenceCondition {
+  // Equivalent to `NX`
+  IfNotExists
+  // Equivalent to `XX`
+  IfExists
+}
+
+pub type SetExpiryOption {
+  // Equivalent to `KEEPTTL`
+  KeepTtl
+  // Equivalent to `EX <value>`
+  ExpirySeconds(Int)
+  // Equivalent to `PX <value>`
+  ExpiryMilliseconds(Int)
+  // Equivalent to `EXAT <value>`
+  ExpiresAtUnixSeconds(Int)
+  // Equivalent to `PXAT <value>`
+  ExpiresAtUnixMilliseconds(Int)
+}
+
+pub type SetOptions {
+  SetOptions(
+    existence_condition: option.Option(SetExistenceCondition),
+    return_old: Bool,
+    expiry_option: option.Option(SetExpiryOption),
+  )
+}
+
+/// Default set options.
+///
+/// | Option | Value |
+/// | ------ | ----- |
+/// | `existence_condition` | `None` |
+/// | `return_old` | `False` |
+/// | `expiry_option` | `None` |
+pub fn default_set_options() -> SetOptions {
+  SetOptions(
+    existence_condition: option.None,
+    return_old: False,
+    expiry_option: option.None,
+  )
 }
 
 /// see [here](https://redis.io/commands/set)!
-pub fn set(client, key: String, value: String, timeout: Int) {
-  command.set(key, value, [])
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
-}
+pub fn set(
+  conn: Connection,
+  key: String,
+  value: String,
+  options: option.Option(SetOptions),
+  timeout: Int,
+) -> Result(String, Error) {
+  let additions =
+    options
+    |> option.map(fn(options) {
+      let additions = case options.expiry_option {
+        option.Some(KeepTtl) -> ["KEEPTTL"]
+        option.Some(ExpirySeconds(value)) -> ["EX", int.to_string(value)]
+        option.Some(ExpiryMilliseconds(value)) -> ["PX", int.to_string(value)]
+        option.Some(ExpiresAtUnixSeconds(value)) -> [
+          "EXAT",
+          int.to_string(value),
+        ]
+        option.Some(ExpiresAtUnixMilliseconds(value)) -> [
+          "PXAT",
+          int.to_string(value),
+        ]
+        option.None -> []
+      }
+      let additions = case options.return_old {
+        True -> ["GET", ..additions]
+        False -> additions
+      }
+      let additions = case options.existence_condition {
+        option.Some(IfNotExists) -> ["NX", ..additions]
+        option.Some(IfExists) -> ["XX", ..additions]
+        option.None -> additions
+      }
+      additions
+    })
+    |> option.unwrap([])
 
-/// see [here](https://redis.io/commands/set)!
-pub fn set_new(client, key: String, value: String, timeout: Int) {
-  command.set(key, value, [command.NX])
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
-}
+  let command = ["SET", key, value, ..additions]
 
-/// see [here](https://redis.io/commands/set)!
-pub fn set_existing(client, key: String, value: String, timeout: Int) {
-  command.set(key, value, [command.XX, command.GET])
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+  execute(conn, command, timeout)
+  |> result.try(expect_any_string)
 }
 
 /// see [here](https://redis.io/commands/mset)!
-pub fn mset(client, kv_list: List(#(String, String)), timeout: Int) {
-  command.mset(kv_list)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn mset(
+  conn: Connection,
+  kv_list: List(#(String, String)),
+  timeout: Int,
+) -> Result(String, Error) {
+  let kv_list =
+    kv_list
+    |> list.map(fn(kv) { [kv.0, kv.1] })
+    |> list.flatten
+
+  ["MSET", ..kv_list]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_any_string)
 }
 
 /// see [here](https://redis.io/commands/del)!
-pub fn del(client, keys: List(String), timeout: Int) {
-  command.del(keys)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn del(
+  conn: Connection,
+  keys: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  use value <- result.try(
+    ["DEL", ..keys]
+    |> execute(conn, _, timeout),
+  )
+
+  case value {
+    [protocol.Integer(n)] -> Ok(n)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(expected: "integer", got: value)),
+      )
+  }
 }
 
 /// see [here](https://redis.io/commands/incr)!
-pub fn incr(client, key: String, timeout: Int) {
-  command.incr(key)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(new)] -> Ok(new)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn incr(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
+  ["INCR", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/incrby)!
-pub fn incr_by(client, key: String, value: Int, timeout: Int) {
-  command.incr_by(key, value)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(new)] -> Ok(new)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn incrby(
+  conn: Connection,
+  key: String,
+  value: Int,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["INCRBY", key, int.to_string(value)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/incrbyfloat)!
-pub fn incr_by_float(client, key: String, value: Float, timeout: Int) {
-  command.incr_by_float(key, value)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.BulkString(new)] ->
-        float.parse(new)
-        |> result.replace_error(error.RESPError)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn incrbyfloat(
+  conn: Connection,
+  key: String,
+  value: Float,
+  timeout: Int,
+) -> Result(Float, Error) {
+  ["INCRBYFLOAT", key, float.to_string(value)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_float)
 }
 
 /// see [here](https://redis.io/commands/decr)!
-pub fn decr(client, key: String, timeout: Int) {
-  command.decr(key)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(new)] -> Ok(new)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn decr(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
+  ["DECR", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/decrby)!
-pub fn decr_by(client, key: String, value: Int, timeout: Int) {
-  command.decr_by(key, value)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(new)] -> Ok(new)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn decr_by(
+  conn: Connection,
+  key: String,
+  value: Int,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["DECRBY", key, int.to_string(value)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/randomkey)!
-pub fn random_key(client, timeout: Int) {
-  command.random_key()
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.BulkString(str)] -> Ok(str)
-      [protocol.Null] -> Error(error.NotFound)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn random_key(conn: Connection, timeout: Int) -> Result(String, Error) {
+  ["RANDOMKEY"]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_bulk_string)
 }
 
 /// see [here](https://redis.io/commands/type)!
-pub fn key_type(client, key: String, timeout: Int) {
-  command.key_type(key)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.SimpleString(str)] ->
-        case str {
-          "set" -> Ok(Set)
-          "list" -> Ok(List)
-          "zset" -> Ok(ZSet)
-          "hash" -> Ok(Hash)
-          "string" -> Ok(String)
-          "stream" -> Ok(Stream)
-          _ -> Error(error.RESPError)
-        }
-
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn key_type(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+) -> Result(KeyType, Error) {
+  ["TYPE", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_key_type)
 }
 
 /// see [here](https://redis.io/commands/rename)!
-pub fn rename(client, key: String, new_key: String, timeout: Int) {
-  command.rename(key, new_key)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.SimpleString(str)] -> Ok(str)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn rename(
+  conn: Connection,
+  key: String,
+  new_key: String,
+  timeout: Int,
+) -> Result(String, Error) {
+  ["RENAME", key, new_key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_simple_string)
 }
 
 /// see [here](https://redis.io/commands/renamenx)!
-pub fn renamenx(client, key: String, new_key: String, timeout: Int) {
-  command.renamenx(key, new_key)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn renamenx(
+  conn: Connection,
+  key: String,
+  new_key: String,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["RENAMENX", key, new_key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/persist)!
-pub fn persist(client, key: String, timeout: Int) {
-  command.persist(key)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
+pub fn persist(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["PERSIST", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/ping)!
 /// for use with a custom message, use `ping_message/3`.
-pub fn ping(client, timeout: Int) {
-  command.ping()
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
+pub fn ping(conn: Connection, timeout: Int) -> Result(String, Error) {
+  ["PING"]
+  |> execute(conn, _, timeout)
+  |> result.try(fn(value) {
     case value {
       [protocol.SimpleString("PONG")] -> Ok("PONG")
-      _ -> Error(error.RESPError)
+      _ ->
+        Error(
+          ProtocolError(protocol.error_string(expected: "PONG", got: value)),
+        )
     }
   })
-  |> result.flatten
 }
 
 /// see [here](https://redis.io/commands/ping)!
-pub fn ping_message(client, message: String, timeout: Int) {
-  command.ping_message(message)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
+pub fn ping_message(
+  conn: Connection,
+  message: String,
+  timeout: Int,
+) -> Result(String, Error) {
+  ["PING", message]
+  |> execute(conn, _, timeout)
+  |> result.try(fn(value) {
     case value {
-      [protocol.BulkString(message)] -> Ok(message)
-      _ -> Error(error.RESPError)
+      [protocol.BulkString(msg)] if msg == message -> Ok(msg)
+      _ ->
+        Error(
+          ProtocolError(protocol.error_string(expected: message, got: value)),
+        )
     }
   })
-  |> result.flatten
+}
+
+pub type ExpireCondition {
+  // Equivalent to `NX`
+  IfNoExpiry
+  // Equivalent to `XX`
+  IfHasExpiry
+  // Equivalent to `GT`
+  IfGreaterThan
+  // Equivalent to `LT`
+  IfLessThan
 }
 
 /// see [here](https://redis.io/commands/expire)!
-pub fn expire(client, key: String, ttl: Int, timeout: Int) {
-  command.expire(key, ttl, option.None)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
-}
-
-/// see [here](https://redis.io/commands/expire)!
-pub fn expire_if(
-  client,
+pub fn expire(
+  conn: Connection,
   key: String,
   ttl: Int,
-  condition: ExpireCondition,
+  condition: option.Option(ExpireCondition),
   timeout: Int,
-) {
-  case condition {
-    NX -> command.expire(key, ttl, option.Some("NX"))
-    XX -> command.expire(key, ttl, option.Some("XX"))
-    GT -> command.expire(key, ttl, option.Some("GT"))
-    LT -> command.expire(key, ttl, option.Some("LT"))
+) -> Result(Int, Error) {
+  let expiry_condition = case condition {
+    option.Some(IfNoExpiry) -> ["NX"]
+    option.Some(IfHasExpiry) -> ["XX"]
+    option.Some(IfGreaterThan) -> ["GT"]
+    option.Some(IfLessThan) -> ["LT"]
+    option.None -> []
   }
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
-}
 
-pub type Next {
-  Continue
-  UnsubscribeFromAll
-  UnsubscribeFrom(List(String))
-}
-
-/// see [here](https://redis.io/commands/publish)!
-pub fn publish(client, channel: String, message: String, timeout: Int) {
-  command.publish(channel, message)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    case value {
-      [protocol.Integer(n)] -> Ok(n)
-      _ -> Error(error.RESPError)
-    }
-  })
-  |> result.flatten
-}
-
-/// see [here](https://redis.io/commands/subscribe)!
-/// Also see [here](https://redis.io/docs/manual/keyspace-notifications)!
-pub fn subscribe(
-  client: client.Client,
-  channels: List(String),
-  init_handler: fn(String, Int) -> Nil,
-  message_handler: fn(String, String) -> Next,
-  timeout: Int,
-) {
-  let _ =
-    command.subscribe(channels)
-    |> client.execute_blocking(client, _, timeout)
-    |> result.map(fn(value) {
-      list.each(value, fn(item) {
-        case item {
-          protocol.Push([
-            protocol.BulkString("subscribe"),
-            protocol.BulkString(channel),
-            protocol.Integer(n),
-          ]) -> Ok(init_handler(channel, n))
-          _ -> Error(error.RESPError)
-        }
-      })
-    })
-
-  use value <- client.receive_forever(client, timeout)
-  case value {
-    Ok([
-      protocol.Push([
-        protocol.BulkString("message"),
-        protocol.BulkString(channel),
-        protocol.BulkString(message),
-      ]),
-    ]) ->
-      case message_handler(channel, message) {
-        Continue -> True
-        UnsubscribeFromAll -> {
-          let _ = unsubscribe_from_all(client, timeout)
-          False
-        }
-        UnsubscribeFrom(channels) ->
-          case unsubscribe(client, channels, timeout) {
-            Ok(result) -> result
-            Error(_) -> False
-          }
-      }
-
-    _ -> False
-  }
-}
-
-/// see [here](https://redis.io/commands/psubscribe)!
-/// Also see [here](https://redis.io/docs/manual/keyspace-notifications)!
-pub fn subscribe_to_patterns(
-  client,
-  patterns: List(String),
-  init_handler: fn(String, Int) -> Nil,
-  message_handler: fn(String, String, String) -> Next,
-  timeout: Int,
-) {
-  let _ =
-    command.subscribe_to_patterns(patterns)
-    |> client.execute_blocking(client, _, timeout)
-    |> result.map(fn(value) {
-      list.each(value, fn(item) {
-        case item {
-          protocol.Push([
-            protocol.BulkString("psubscribe"),
-            protocol.BulkString(channel),
-            protocol.Integer(n),
-          ]) -> init_handler(channel, n)
-          _ -> Nil
-        }
-      })
-    })
-
-  use value <- client.receive_forever(client, timeout)
-  case value {
-    Ok([
-      protocol.Push([
-        protocol.BulkString("pmessage"),
-        protocol.BulkString(pattern),
-        protocol.BulkString(channel),
-        protocol.BulkString(message),
-      ]),
-    ]) ->
-      case message_handler(pattern, channel, message) {
-        Continue -> True
-        UnsubscribeFromAll -> {
-          let _ = unsubscribe_from_all_patterns(client, timeout)
-          False
-        }
-        UnsubscribeFrom(patterns) -> {
-          case unsubscribe_from_patterns(client, patterns, timeout) {
-            Ok(result) -> result
-            Error(_) -> False
-          }
-        }
-      }
-
-    _ -> False
-  }
-}
-
-fn unsubscribe(client: client.Client, channels: List(String), timeout: Int) {
-  command.unsubscribe(channels)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    list.all(value, fn(item) {
-      let assert protocol.Push([
-        protocol.BulkString("unsubscribe"),
-        protocol.BulkString(_),
-        protocol.Integer(n),
-      ]) = item
-      n > 0
-    })
-  })
-}
-
-fn unsubscribe_from_all(client: client.Client, timeout: Int) {
-  command.unsubscribe_from_all()
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    list.all(value, fn(item) {
-      let assert protocol.Push([
-        protocol.BulkString("unsubscribe"),
-        protocol.BulkString(_),
-        protocol.Integer(n),
-      ]) = item
-      n > 0
-    })
-  })
-}
-
-fn unsubscribe_from_patterns(client, patterns: List(String), timeout: Int) {
-  command.unsubscribe_from_patterns(patterns)
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    list.all(value, fn(item) {
-      let assert protocol.Push([
-        protocol.BulkString("punsubscribe"),
-        protocol.BulkString(_),
-        protocol.Integer(n),
-      ]) = item
-      n > 0
-    })
-  })
-}
-
-fn unsubscribe_from_all_patterns(client, timeout: Int) {
-  command.unsubscribe_from_all_patterns()
-  |> client.execute(client, _, timeout)
-  |> result.map(fn(value) {
-    list.all(value, fn(item) {
-      let assert protocol.Push([
-        protocol.BulkString("punsubscribe"),
-        protocol.BulkString(_),
-        protocol.Integer(n),
-      ]) = item
-      n > 0
-    })
-  })
+  ["EXPIRE", key, int.to_string(ttl), ..expiry_condition]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }

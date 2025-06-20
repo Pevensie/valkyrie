@@ -1,32 +1,32 @@
 import gleam/int
 import gleam/list
 
-import valkyrie/internal/command
+import valkyrie/internal/protocol
 
 pub fn add(key: String, values: List(String)) {
   ["SADD", key]
   |> list.append(values)
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn card(key: String) {
   ["SCARD", key]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn is_member(key: String, value: String) {
   ["SISMEMBER", key, value]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn members(key: String) {
   ["SMEMBERS", key]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn scan(key: String, cursor: Int, count: Int) {
   ["SSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn scan_pattern(key: String, cursor: Int, pattern: String, count: Int) {
@@ -39,5 +39,5 @@ pub fn scan_pattern(key: String, cursor: Int, pattern: String, count: Int) {
     "COUNT",
     int.to_string(count),
   ]
-  |> command.prepare
+  |> protocol.encode_command
 }

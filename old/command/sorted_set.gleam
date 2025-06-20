@@ -1,73 +1,73 @@
 import gleam/int
 import gleam/list
 
-import valkyrie/internal/command
+import valkyrie/internal/protocol
 
 pub fn add_new(key: String, members: List(#(String, String))) {
   ["ZADD", key, "NX", "CH"]
   |> list.append(list.map(members, fn(member) { member.1 <> member.0 }))
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn upsert(key: String, members: List(#(String, String))) {
   ["ZADD", key, "CH"]
   |> list.append(list.map(members, fn(member) { member.1 <> member.0 }))
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn upsert_only_lower_scores(key: String, members: List(#(String, String))) {
   ["ZADD", key, "LT", "CH"]
   |> list.append(list.map(members, fn(member) { member.1 <> member.0 }))
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn upsert_only_higher_scores(key: String, members: List(#(String, String))) {
   ["ZADD", key, "GT", "CH"]
   |> list.append(list.map(members, fn(member) { member.1 <> member.0 }))
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn update(key: String, members: List(#(String, String))) {
   ["ZADD", key, "XX", "CH"]
   |> list.append(list.map(members, fn(member) { member.1 <> member.0 }))
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn update_only_lower_scores(key: String, members: List(#(String, String))) {
   ["ZADD", key, "XX", "LT", "CH"]
   |> list.append(list.map(members, fn(member) { member.1 <> member.0 }))
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn update_only_higher_scores(key: String, members: List(#(String, String))) {
   ["ZADD", key, "XX", "GT", "CH"]
   |> list.append(list.map(members, fn(member) { member.1 <> member.0 }))
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn incr_by(key: String, member: String, change_in_score: String) {
   ["ZINCRBY", key, change_in_score, member]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn card(key: String) {
   ["ZCARD", key]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn count(key: String, min: String, max: String) {
   ["ZCOUNT", key, min, max]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn score(key: String, member: String) {
   ["ZSCORE", key, member]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn scan(key: String, cursor: Int, count: Int) {
   ["ZSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn scan_pattern(key: String, cursor: Int, pattern: String, count: Int) {
@@ -80,51 +80,51 @@ pub fn scan_pattern(key: String, cursor: Int, pattern: String, count: Int) {
     "COUNT",
     int.to_string(count),
   ]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn rem(key: String, members: List(String)) {
   ["ZREM", key]
   |> list.append(members)
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn random_members(key: String, count: Int) {
   ["ZRANDMEMBER", key, int.to_string(count), "WITHSCORES"]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn rank(key: String, member: String) {
   ["ZRANK", key, member, "WITHSCORE"]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn reverse_rank(key: String, member: String) {
   ["ZREVRANK", key, member, "WITHSCORE"]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn pop_min(key: String, count: Int) {
   ["ZPOPMIN", key, int.to_string(count)]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn pop_max(key: String, count: Int) {
   ["ZPOPMAX", key, int.to_string(count)]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn range(key: String, start: Int, stop: Int) {
   ["ZRANGE", key, int.to_string(start), int.to_string(stop), "WITHSCORES"]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn reverse_range(key: String, start: Int, stop: Int) {
   ["ZREVRANGE", key, int.to_string(start), int.to_string(stop), "WITHSCORES"]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn range_by_score(key: String, min: String, max: String) {
   ["ZRANGEBYSCORE", key, min, max, "WITHSCORES"]
-  |> command.prepare
+  |> protocol.encode_command
 }

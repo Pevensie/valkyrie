@@ -3,40 +3,40 @@ import gleam/int
 import gleam/list
 import gleam/option
 
-import valkyrie/internal/command
+import valkyrie/internal/protocol
 
 pub fn lpush(key: String, values: List(String)) {
   ["LPUSH", key]
   |> list.append(values)
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn rpush(key: String, values: List(String)) {
   ["RPUSH", key]
   |> list.append(values)
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn lpushx(key: String, values: List(String)) {
   ["LPUSHX", key]
   |> list.append(values)
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn rpushx(key: String, values: List(String)) {
   ["RPUSHX", key]
   |> list.append(values)
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn len(key: String) {
   ["LLEN", key]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn range(key: String, start: Int, end: Int) {
   ["LRANGE", key, int.to_string(start), int.to_string(end)]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn lpop(key: String, count: option.Option(Int)) {
@@ -44,7 +44,7 @@ pub fn lpop(key: String, count: option.Option(Int)) {
     option.None -> ["LPOP", key]
     option.Some(count) -> ["LPOP", key, int.to_string(count)]
   }
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn blpop(keys: List(String), timeout: Int) {
@@ -60,7 +60,7 @@ pub fn blpop(keys: List(String), timeout: Int) {
     |> float.round
     |> int.to_string,
   ])
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn rpop(key: String, count: option.Option(Int)) {
@@ -68,7 +68,7 @@ pub fn rpop(key: String, count: option.Option(Int)) {
     option.None -> ["RPOP", key]
     option.Some(count) -> ["RPOP", key, int.to_string(count)]
   }
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn brpop(keys: List(String), timeout: Int) {
@@ -84,30 +84,30 @@ pub fn brpop(keys: List(String), timeout: Int) {
     |> float.round
     |> int.to_string,
   ])
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn index(key: String, index: Int) {
   ["LINDEX", key, int.to_string(index)]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn rem(key: String, count: Int, value: String) {
   ["LREM", key, int.to_string(count), value]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn set(key: String, index: Int, value: String) {
   ["LSET", key, int.to_string(index), value]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn insert_after(key: String, pivot: String, value: String) {
   ["LINSERT", key, "AFTER", pivot, value]
-  |> command.prepare
+  |> protocol.encode_command
 }
 
 pub fn insert_before(key: String, pivot: String, value: String) {
   ["LINSERT", key, "BEFORE", pivot, value]
-  |> command.prepare
+  |> protocol.encode_command
 }
