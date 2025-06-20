@@ -126,31 +126,24 @@ pub fn start_pool(
   |> result.map(Pooled)
 }
 
-pub opaque type ConnectionHandle {
-  ConnectionHandle(subj: process.Subject(bath.Pool(mug.Socket)))
-}
-
 pub fn supervised_pool(
   config: Config,
   pool_size: Int,
   init_timeout: Int,
 ) -> #(
   supervision.ChildSpecification(process.Subject(bath.Msg(mug.Socket))),
-  ConnectionHandle,
+  process.Selector(Connection),
 ) {
   let subj = process.new_subject()
   let spec =
     create_pool_builder(config, pool_size, init_timeout)
     |> bath.supervised(subj, init_timeout)
-  #(spec, ConnectionHandle(subj))
-}
 
-pub fn receive_connection(
-  handle: ConnectionHandle,
-  timeout: Int,
-) -> Result(Connection, Nil) {
-  process.receive(handle.subj, timeout)
-  |> result.map(Pooled)
+  let selector =
+    process.new_selector()
+    |> process.select_map(subj, Pooled)
+
+  #(spec, selector)
 }
 
 pub fn shutdown(conn: Connection) -> Result(Nil, Nil) {
