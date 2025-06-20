@@ -10,7 +10,7 @@ pub fn main() {
 fn get_test_client(next) {
   let assert Ok(client) =
     valkyrie.default_config()
-    |> valkyrie.create_connection(128)
+    |> valkyrie.start_pool(3, 128)
 
   let res = next(client)
   let assert Ok(_) = valkyrie.shutdown(client)

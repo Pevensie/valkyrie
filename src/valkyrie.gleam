@@ -7,11 +7,13 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option
+import gleam/otp/actor
+import gleam/otp/supervision
 import gleam/result
+import gleam/string
 import mug
 
 import valkyrie/internal/protocol
-import valkyrie/internal/tcp
 
 const protocol_version = 3
 
@@ -69,12 +71,9 @@ pub fn auth(config: Config, auth: Auth) -> Config {
 // ----- Lifecycle functions ----- //
 // ------------------------------- //
 
-pub fn create_connection(
-  config: Config,
-  timeout: Int,
-) -> Result(Connection, Error) {
+fn create_socket(config: Config, timeout: Int) {
   use socket <- result.try(
-    tcp.connect(config.host, config.port, timeout)
+    mug.connect(mug.ConnectionOptions(config.host, config.port, timeout))
     |> result.map_error(TcpError),
   )
 
@@ -89,22 +88,76 @@ pub fn create_connection(
     ],
     timeout,
   ))
-
-  Ok(conn)
+  Ok(socket)
 }
 
-fn start_pool(config: Config, pool_size: Int) -> Result(Connection, Error) {
-  todo
+pub fn create_connection(
+  config: Config,
+  timeout: Int,
+) -> Result(Connection, Error) {
+  create_socket(config, timeout)
+  |> result.map(Single)
 }
 
-fn supervised_pool(config: Config, pool_size: Int) -> Result(Connection, Error) {
-  todo
+pub fn create_pool_builder(
+  config: Config,
+  pool_size: Int,
+  init_timeout: Int,
+) -> bath.Builder(mug.Socket) {
+  bath.new(fn() {
+    create_socket(config, init_timeout)
+    // TODO: proper to_string function for errors
+    |> result.map_error(string.inspect)
+  })
+  |> bath.size(pool_size)
+  |> bath.on_shutdown(fn(socket) {
+    mug.shutdown(socket)
+    |> result.unwrap(Nil)
+  })
+}
+
+pub fn start_pool(
+  config: Config,
+  pool_size: Int,
+  init_timeout: Int,
+) -> Result(Connection, actor.StartError) {
+  create_pool_builder(config, pool_size, init_timeout)
+  |> bath.start(init_timeout)
+  |> result.map(Pooled)
+}
+
+pub opaque type ConnectionHandle {
+  ConnectionHandle(subj: process.Subject(bath.Pool(mug.Socket)))
+}
+
+pub fn supervised_pool(
+  config: Config,
+  pool_size: Int,
+  init_timeout: Int,
+) -> #(
+  supervision.ChildSpecification(process.Subject(bath.Msg(mug.Socket))),
+  ConnectionHandle,
+) {
+  let subj = process.new_subject()
+  let spec =
+    create_pool_builder(config, pool_size, init_timeout)
+    |> bath.supervised(subj, init_timeout)
+  #(spec, ConnectionHandle(subj))
+}
+
+pub fn receive_connection(
+  handle: ConnectionHandle,
+  timeout: Int,
+) -> Result(Connection, Nil) {
+  process.receive(handle.subj, timeout)
+  |> result.map(Pooled)
 }
 
 pub fn shutdown(conn: Connection) -> Result(Nil, Nil) {
   case conn {
     Single(socket) -> mug.shutdown(socket) |> result.replace_error(Nil)
-    _ -> todo as "Handle shutting down pools"
+    Pooled(pool) ->
+      bath.shutdown(pool, False, 1000) |> result.replace_error(Nil)
   }
 }
 
@@ -141,12 +194,11 @@ fn execute(conn: Connection, command: List(String), timeout: Int) {
 
 fn do_execute(socket: mug.Socket, command: List(String), timeout: Int) {
   use _ <- result.try(
-    tcp.send(socket, protocol.encode_command(command))
+    mug.send(socket, protocol.encode_command(command))
     |> result.map_error(TcpError),
   )
 
-  let selector = tcp.new_selector()
-  use reply <- result.try(socket_receive(socket, selector, <<>>, now(), timeout))
+  use reply <- result.try(socket_receive(socket, <<>>, now(), timeout))
   case reply {
     [protocol.SimpleError(error)] | [protocol.BulkError(error)] ->
       Error(ServerError(error))
@@ -156,7 +208,6 @@ fn do_execute(socket: mug.Socket, command: List(String), timeout: Int) {
 
 fn socket_receive(
   socket: mug.Socket,
-  selector: process.Selector(Result(BitArray, mug.Error)),
   storage: BitArray,
   start_time: Int,
   timeout: Int,
@@ -167,12 +218,11 @@ fn socket_receive(
       case now() - start_time >= timeout * 1_000_000 {
         True -> Error(Timeout)
         False ->
-          case tcp.receive(socket, selector, timeout) {
+          case mug.receive(socket, timeout) {
             Error(tcp_error) -> Error(TcpError(tcp_error))
             Ok(packet) ->
               socket_receive(
                 socket,
-                selector,
                 bit_array.append(storage, packet),
                 start_time,
                 timeout,
