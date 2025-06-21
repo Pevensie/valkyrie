@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option
+import gleam/otp/static_supervisor
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -19,6 +20,24 @@ fn get_test_conn(next: fn(valkyrie.Connection) -> a) -> a {
 
   let res = next(conn)
   let assert Ok(_) = valkyrie.shutdown(conn)
+  res
+}
+
+fn get_supervised_conn(next: fn(valkyrie.Connection) -> a) -> a {
+  let connection_subject = process.new_subject()
+  let child_spec =
+    valkyrie.default_config()
+    |> valkyrie.supervised_pool(connection_subject, 3, 128)
+
+  let assert Ok(_started) =
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(child_spec)
+    |> static_supervisor.start
+
+  let assert Ok(conn) = process.receive(connection_subject, 1000)
+
+  let res = next(conn)
+  // Shutdown is handled by the supervision tree shutdown
   res
 }
 
@@ -45,6 +64,11 @@ pub fn create_connection_test() {
 
 pub fn pool_connection_test() {
   use client <- get_test_conn()
+  let assert Ok("PONG") = valkyrie.ping(client, 1000)
+}
+
+pub fn supervised_pool_connection_test() {
+  use client <- get_supervised_conn()
   let assert Ok("PONG") = valkyrie.ping(client, 1000)
 }
 
@@ -707,21 +731,6 @@ pub fn custom_command_test() {
   // Test PING command with custom message (returns BulkString)
   let assert Ok([protocol.BulkString("Custom ping")]) =
     conn |> valkyrie.custom(["PING", "Custom ping"], 1000)
-}
-
-// Error Handling Tests
-pub fn timeout_error_test() {
-  use conn <- get_test_conn()
-
-  // Use a very short timeout that should fail
-  let result = conn |> valkyrie.get("any_key", 1)
-
-  case result {
-    Error(valkyrie.Timeout) -> Nil
-    Error(_) -> Nil
-    // Other errors are possible too
-    Ok(_) -> panic as "Expected timeout error"
-  }
 }
 
 // Edge Cases

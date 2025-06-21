@@ -18,7 +18,7 @@ gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_stdlib = ">= 0.60.0 and < 2.0.0"
 mug = ">= 2.0.0 and < 3.0.0"
 lifeguard = ">= 3.0.0 and < 4.0.0"
-bath = ">= 4.0.0 and < 5.0.0"
+bath = ">= 4.1.0 and < 5.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.5.1 and < 2.0.0"

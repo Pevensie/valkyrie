@@ -9,18 +9,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [valkey/valkey, redis]
+        version: [7, 8]
     services:
       valkey:
-        image: valkey/valkey:latest
+        image: ${{ matrix.image }}:${{ matrix.version }}
         ports:
           - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: '27'
-          gleam-version: '1.7'
-          rebar3-version: '3'
+          otp-version: "27"
+          gleam-version: "1.7"
+          rebar3-version: "3"
       - run: gleam deps download
       - run: gleam test
       - run: gleam format --check src test

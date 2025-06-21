@@ -239,12 +239,12 @@ pub fn start_pool(
 
 /// Create a supervised connection pool for Redis connections.
 ///
-/// Returns a supervision specification for integrating the pool into an OTP
+/// Returns a supervision specification for including the pool into your
 /// supervision tree. The pool will be automatically restarted if it crashes,
 /// making this the recommended approach for production applications.
 ///
-/// The selector returned can be used to retrieve the [`Connection`](#Connection)
-/// value once the pool has started.
+/// The [`Connection`](#Connection) value will be sent to the provided subject
+/// when the pool is started.
 ///
 /// ## Example
 ///
@@ -253,22 +253,12 @@ pub fn start_pool(
 /// ```
 pub fn supervised_pool(
   config: Config,
+  subj: process.Subject(Connection),
   pool_size: Int,
   init_timeout: Int,
-) -> #(
-  supervision.ChildSpecification(process.Subject(bath.Msg(mug.Socket))),
-  process.Selector(Connection),
-) {
-  let subj = process.new_subject()
-  let spec =
-    create_pool_builder(config, pool_size, init_timeout)
-    |> bath.supervised(subj, init_timeout)
-
-  let selector =
-    process.new_selector()
-    |> process.select_map(subj, Pooled)
-
-  #(spec, selector)
+) -> supervision.ChildSpecification(process.Subject(bath.Msg(mug.Socket))) {
+  create_pool_builder(config, pool_size, init_timeout)
+  |> bath.supervised_map(subj, Pooled, init_timeout)
 }
 
 /// Shut down a Redis connection or connection pool.
@@ -776,7 +766,7 @@ pub fn mget(
   }
 }
 
-/// Append a value to a key.
+/// Append a string to the value at the given key.
 ///
 /// If the key doesn't exist, it creates a new key with the given value.
 /// Returns the new length of the string after appending.
@@ -842,17 +832,15 @@ pub fn default_set_options() -> SetOptions {
 ///
 /// ```gleam
 /// // Basic set
-/// let assert Ok(_) = set(conn, "key", "value", option.None, 5000)
+/// let assert Ok(_) = valkyrie.set(conn, "key", "value", option.None, 5000)
 ///
 /// // Set with expiry
-/// let options = default_set_options()
-///   |> SetOptions(.._, expiry_option: option.Some(ExpirySeconds(300)))
-/// let assert Ok(_) = set(conn, "key", "value", option.Some(options), 5000)
+/// let options = SetOptions(..default_set_options(), expiry_option: option.Some(ExpirySeconds(300)))
+/// let assert Ok(_) = valkyrie.set(conn, "key", "value", option.Some(options), 5000)
 ///
 /// // Set only if key doesn't exist
-/// let options = default_set_options()
-///   |> SetOptions(.._, existence_condition: option.Some(IfNotExists))
-/// let assert Ok(_) = set(conn, "key", "value", option.Some(options), 5000)
+/// let options = SetOptions(..default_set_options(), existence_condition: option.Some(IfNotExists))
+/// let assert Ok(_) = valkyrie.set(conn, "key", "value", option.Some(options), 5000)
 /// ```
 ///
 /// See the [Redis SET documentation](https://redis.io/commands/set) for more details.
