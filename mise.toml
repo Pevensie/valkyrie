@@ -3,10 +3,20 @@ gleam = "1.11.1"
 
 [tasks.test]
 run = [
+    # Make sure everything is stopped
     "docker compose --profile all down",
+
+    # Redis
     "docker compose --profile redis up -d",
     "gleam test",
     "docker compose --profile redis down",
+
+    # KeyDB
+    "docker compose --profile keydb up -d",
+    "gleam test",
+    "docker compose --profile keydb down",
+
+    # Valkey
     "docker compose --profile valkey up -d",
     "gleam test",
     # Don't take Valkey down - leave something up for

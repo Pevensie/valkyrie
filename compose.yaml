@@ -12,3 +12,10 @@ services:
     ports:
       - 6379:6379
     restart: always
+
+  keydb:
+    profiles: ["keydb", "all"]
+    image: eqalpha/keydb:latest
+    ports:
+      - 6379:6379
+    restart: always
