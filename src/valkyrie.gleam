@@ -306,6 +306,16 @@ fn expect_simple_string(value: List(protocol.Value)) -> Result(String, Error) {
   }
 }
 
+fn expect_bulk_string(value: List(protocol.Value)) -> Result(String, Error) {
+  case value {
+    [protocol.BulkString(str)] -> Ok(str)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(expected: "bulk string", got: value)),
+      )
+  }
+}
+
 fn expect_any_string(value: List(protocol.Value)) -> Result(String, Error) {
   case value {
     [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
@@ -346,6 +356,27 @@ fn expect_any_nullable_string(
           got: value,
         )),
       )
+  }
+}
+
+fn expect_bulk_string_array(
+  value: List(protocol.Value),
+) -> Result(List(String), Error) {
+  case value {
+    [protocol.Array(array)] ->
+      list.try_map(array, fn(item) {
+        case item {
+          protocol.BulkString(str) -> Ok(str)
+          _ ->
+            Error(
+              ProtocolError(
+                protocol.error_string(expected: "bulk string", got: [item]),
+              ),
+            )
+        }
+      })
+    _ ->
+      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
   }
 }
 
@@ -515,24 +546,32 @@ pub fn scan_pattern_with_type(
 }
 
 /// see [here](https://redis.io/commands/exists)!
-pub fn exists(client, keys: List(String), timeout: Int) -> Result(Int, Error) {
+pub fn exists(
+  conn: Connection,
+  keys: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
   ["EXISTS", ..keys]
-  |> execute(client, _, timeout)
+  |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
 /// see [here](https://redis.io/commands/get)!
-pub fn get(client, key: String, timeout: Int) {
+pub fn get(conn: Connection, key: String, timeout: Int) -> Result(String, Error) {
   ["GET", key]
-  |> execute(client, _, timeout)
+  |> execute(conn, _, timeout)
   |> result.try(expect_any_nullable_string)
 }
 
 /// see [here](https://redis.io/commands/mget)!
-pub fn mget(client, keys: List(String), timeout: Int) {
+pub fn mget(
+  conn: Connection,
+  keys: List(String),
+  timeout: Int,
+) -> Result(List(String), Error) {
   use value <- result.try(
     ["MGET", ..keys]
-    |> execute(client, _, timeout),
+    |> execute(conn, _, timeout),
   )
 
   case value {
@@ -555,9 +594,14 @@ pub fn mget(client, keys: List(String), timeout: Int) {
 }
 
 /// see [here](https://redis.io/commands/append)!
-pub fn append(client, key: String, value: String, timeout: Int) {
+pub fn append(
+  conn: Connection,
+  key: String,
+  value: String,
+  timeout: Int,
+) -> Result(Int, Error) {
   ["APPEND", key, value]
-  |> execute(client, _, timeout)
+  |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
@@ -850,6 +894,163 @@ pub fn expire(
   }
 
   ["EXPIRE", key, int.to_string(ttl), ..expiry_condition]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+// -------------------------- //
+// ----- List functions ----- //
+// -------------------------- //
+
+/// see [here](https://redis.io/commands/lpush)!
+pub fn lpush(
+  conn: Connection,
+  key: String,
+  values: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["LPUSH", key, ..values]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+/// see [here](https://redis.io/commands/rpush)!
+pub fn rpush(
+  conn: Connection,
+  key: String,
+  values: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["RPUSH", key, ..values]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+/// see [here](https://redis.io/commands/lpushx)!
+pub fn lpushx(
+  conn: Connection,
+  key: String,
+  values: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["LPUSHX", key, ..values]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+/// see [here](https://redis.io/commands/rpushx)!
+pub fn rpushx(
+  conn: Connection,
+  key: String,
+  values: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["RPUSHX", key, ..values]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn llen(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
+  ["LLEN", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+/// see [here](https://redis.io/commands/lrange)!
+pub fn lrange(
+  conn: Connection,
+  key: String,
+  start: Int,
+  end: Int,
+  timeout: Int,
+) -> Result(List(String), Error) {
+  ["LRANGE", key, int.to_string(start), int.to_string(end)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_bulk_string_array)
+}
+
+/// see [here](https://redis.io/commands/lpop)!
+pub fn lpop(
+  conn: Connection,
+  key: String,
+  count: Int,
+  timeout: Int,
+) -> Result(String, Error) {
+  ["LPOP", key, int.to_string(count)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_bulk_string)
+}
+
+/// see [here](https://redis.io/commands/rpop)!
+pub fn rpop(
+  conn: Connection,
+  key: String,
+  count: Int,
+  timeout: Int,
+) -> Result(String, Error) {
+  ["RPOP", key, int.to_string(count)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_bulk_string)
+}
+
+/// see [here](https://redis.io/commands/lindex)!
+pub fn lindex(
+  conn: Connection,
+  key: String,
+  index: Int,
+  timeout: Int,
+) -> Result(String, Error) {
+  ["LINDEX", key, int.to_string(index)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_bulk_string)
+}
+
+/// see [here](https://redis.io/commands/lrem)!
+pub fn lrem(
+  conn: Connection,
+  key: String,
+  count: Int,
+  value: String,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["LREM", key, int.to_string(count), value]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+/// see [here](https://redis.io/commands/lset)!
+pub fn lset(
+  conn: Connection,
+  key: String,
+  index: Int,
+  value: String,
+  timeout: Int,
+) -> Result(String, Error) {
+  ["LSET", key, int.to_string(index), value]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_simple_string)
+}
+
+pub type InsertPosition {
+  Before
+  After
+}
+
+/// see [here](https://redis.io/commands/linsert)!
+pub fn linsert(
+  conn: Connection,
+  key: String,
+  position: InsertPosition,
+  pivot: String,
+  value: String,
+  timeout: Int,
+) -> Result(Int, Error) {
+  let position = case position {
+    Before -> "BEFORE"
+    After -> "AFTER"
+  }
+
+  ["LINSERT", key, position, pivot, value]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
