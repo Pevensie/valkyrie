@@ -43,6 +43,7 @@ pub type PoolError {
 
 pub type Error {
   NotFound
+  Conflict
   ProtocolError(String)
   ConnectionError
   Timeout
@@ -292,7 +293,7 @@ fn execute(conn: Connection, command: List(String), timeout: Int) {
                 bath.discard()
                 |> bath.returning(Error(error))
               }
-              NotFound | ServerError(_) | Timeout -> {
+              NotFound | Conflict | ServerError(_) | Timeout -> {
                 bath.keep()
                 |> bath.returning(Error(error))
               }
@@ -370,7 +371,9 @@ fn expect_cursor(cursor_string: String) -> Result(Int, Error) {
   }
 }
 
-fn expect_cursor_and_array(values: List(protocol.Value)) {
+fn expect_cursor_and_array(
+  values: List(protocol.Value),
+) -> Result(#(List(String), Int), Error) {
   case values {
     [
       protocol.Array([protocol.BulkString(new_cursor_str), protocol.Array(keys)]),
@@ -401,9 +404,63 @@ fn expect_cursor_and_array(values: List(protocol.Value)) {
   }
 }
 
+fn expect_cursor_and_sorted_set_member_array(
+  values: List(protocol.Value),
+) -> Result(#(List(#(String, Score)), Int), Error) {
+  case values {
+    [
+      protocol.Array([
+        protocol.BulkString(new_cursor_str),
+        protocol.Array(members),
+      ]),
+    ] -> {
+      use new_cursor <- result.try(expect_cursor(new_cursor_str))
+      use array <- result.try(
+        members
+        |> list.sized_chunk(2)
+        |> list.try_map(fn(item) {
+          case item {
+            [protocol.BulkString(member), protocol.BulkString(score)] ->
+              case score_from_string(score) {
+                Ok(score) -> Ok(#(member, score))
+                _ -> Error(ProtocolError("Invalid score: " <> score))
+              }
+            _ ->
+              Error(
+                ProtocolError(protocol.error_string(
+                  expected: "member and score",
+                  got: item,
+                )),
+              )
+          }
+        }),
+      )
+      Ok(#(array, new_cursor))
+    }
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "cursor and array",
+          got: values,
+        )),
+      )
+  }
+}
+
 fn expect_integer(value: List(protocol.Value)) -> Result(Int, Error) {
   case value {
     [protocol.Integer(n)] -> Ok(n)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(expected: "integer", got: value)),
+      )
+  }
+}
+
+fn expect_nullable_integer(value: List(protocol.Value)) -> Result(Int, Error) {
+  case value {
+    [protocol.Integer(n)] -> Ok(n)
+    [protocol.Null] -> Error(NotFound)
     _ ->
       Error(
         ProtocolError(protocol.error_string(expected: "integer", got: value)),
@@ -560,6 +617,60 @@ fn expect_bulk_string_set(
       })
     _ ->
       Error(ProtocolError(protocol.error_string(expected: "set", got: value)))
+  }
+}
+
+fn expect_score(value) {
+  case value {
+    protocol.Double(value) -> Ok(Double(value))
+    protocol.Infinity -> Ok(Infinity)
+    protocol.NegativeInfinity -> Ok(NegativeInfinity)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(expected: "score", got: [value])),
+      )
+  }
+}
+
+fn expect_sorted_set_member_array(
+  value: List(protocol.Value),
+) -> Result(List(#(String, Score)), Error) {
+  case value {
+    [protocol.Array(members)] -> {
+      use array <- result.then(
+        members
+        |> list.try_map(fn(item) {
+          case item {
+            protocol.Array([protocol.BulkString(member), score]) ->
+              expect_score(score)
+              |> result.map(fn(score) { #(member, score) })
+            _ ->
+              Error(
+                ProtocolError(
+                  protocol.error_string(expected: "member and score", got: [
+                    item,
+                  ]),
+                ),
+              )
+          }
+        }),
+      )
+      Ok(array)
+    }
+    _ ->
+      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+  }
+}
+
+fn expect_nullable_rank_and_score(value) {
+  case value {
+    [protocol.Array([protocol.Integer(rank), score])] ->
+      score
+      |> expect_score
+      |> result.map(fn(score) { #(rank, score) })
+    [protocol.Null] -> Error(NotFound)
+    _ ->
+      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
   }
 }
 
@@ -906,10 +1017,10 @@ pub fn set(
   options: option.Option(SetOptions),
   timeout: Int,
 ) -> Result(String, Error) {
-  let additions =
+  let modifiers =
     options
     |> option.map(fn(options) {
-      let additions = case options.expiry_option {
+      let modifiers = case options.expiry_option {
         option.Some(KeepTtl) -> ["KEEPTTL"]
         option.Some(ExpirySeconds(value)) -> ["EX", int.to_string(value)]
         option.Some(ExpiryMilliseconds(value)) -> ["PX", int.to_string(value)]
@@ -923,20 +1034,20 @@ pub fn set(
         ]
         option.None -> []
       }
-      let additions = case options.return_old {
-        True -> ["GET", ..additions]
-        False -> additions
+      let modifiers = case options.return_old {
+        True -> ["GET", ..modifiers]
+        False -> modifiers
       }
-      let additions = case options.existence_condition {
-        option.Some(IfNotExists) -> ["NX", ..additions]
-        option.Some(IfExists) -> ["XX", ..additions]
-        option.None -> additions
+      let modifiers = case options.existence_condition {
+        option.Some(IfNotExists) -> ["NX", ..modifiers]
+        option.Some(IfExists) -> ["XX", ..modifiers]
+        option.None -> modifiers
       }
-      additions
+      modifiers
     })
     |> option.unwrap([])
 
-  let command = ["SET", key, value, ..additions]
+  let command = ["SET", key, value, ..modifiers]
 
   execute(conn, command, timeout)
   |> result.try(expect_any_nullable_string)
@@ -1531,6 +1642,312 @@ pub fn sscan_pattern(
   ]
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_array)
+}
+
+// -------------------------------- //
+// ----- Sorted set functions ----- //
+// -------------------------------- //
+
+pub type Score {
+  Infinity
+  Double(Float)
+  NegativeInfinity
+}
+
+fn score_to_string(score) {
+  case score {
+    Infinity -> "+inf"
+    NegativeInfinity -> "-inf"
+    Double(value) -> float.to_string(value)
+  }
+}
+
+fn score_from_string(score: String) -> Result(Score, Nil) {
+  case score {
+    "+inf" | "inf" -> Ok(Infinity)
+    "-inf" -> Ok(NegativeInfinity)
+    _ ->
+      case int.parse(score) {
+        Ok(score) ->
+          score
+          |> int.to_float
+          |> Double
+          |> Ok
+
+        Error(Nil) ->
+          score
+          |> float.parse
+          |> result.map(Double)
+      }
+  }
+}
+
+pub type ZaddCondition {
+  /// Equivalent to `NX`
+  IfNotExistsInSet
+  /// Equivalent to `XX`
+  IfExistsInSet
+  /// Equivalent to `XX LT`
+  IfScoreLessThanExisting
+  /// Equivalent to `XX GT`
+  IfScoreGreaterThanExisting
+}
+
+pub fn zadd(
+  conn: Connection,
+  key: String,
+  members: List(#(String, Score)),
+  condition: ZaddCondition,
+  return_changed: Bool,
+  timeout: Int,
+) -> Result(Int, Error) {
+  let changed_modifier = case return_changed {
+    True -> ["CH"]
+    False -> []
+  }
+  let modifiers = case condition {
+    IfNotExistsInSet -> ["NX", ..changed_modifier]
+    IfExistsInSet -> ["XX", ..changed_modifier]
+    IfScoreLessThanExisting -> ["XX", "LT", ..changed_modifier]
+    IfScoreGreaterThanExisting -> ["XX", "GT", ..changed_modifier]
+  }
+  let command =
+    list.append(
+      modifiers,
+      list.flat_map(members, fn(member) {
+        [score_to_string(member.1), member.0]
+      }),
+    )
+
+  ["ZADD", key, ..command]
+  |> execute(conn, _, timeout)
+  |> result.try(fn(value) {
+    case expect_nullable_integer(value) {
+      Ok(integer) -> Ok(integer)
+
+      // This API only returns null if there's a conflict
+      Error(NotFound) -> Error(Conflict)
+      Error(error) -> Error(error)
+    }
+  })
+}
+
+pub fn zincrby(
+  conn: Connection,
+  key: String,
+  member: String,
+  delta: Score,
+  timeout: Int,
+) -> Result(Float, Error) {
+  ["ZINCRBY", key, score_to_string(delta), member]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_float)
+}
+
+pub fn zcard(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
+  ["ZCARD", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn zcount(
+  conn: Connection,
+  key: String,
+  min: Score,
+  max: Score,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["ZCOUNT", key, score_to_string(min), score_to_string(max)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn zscore(
+  conn: Connection,
+  key: String,
+  member: String,
+  timeout: Int,
+) -> Result(Float, Error) {
+  ["ZSCORE", key, member]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_float)
+}
+
+pub fn zscan(
+  conn: Connection,
+  key: String,
+  cursor: Int,
+  count: Int,
+  timeout: Int,
+) -> Result(#(List(#(String, Score)), Int), Error) {
+  ["ZSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_sorted_set_member_array)
+}
+
+pub fn zscan_pattern(
+  conn: Connection,
+  key: String,
+  cursor: Int,
+  pattern: String,
+  count: Int,
+  timeout: Int,
+) -> Result(#(List(#(String, Score)), Int), Error) {
+  [
+    "ZSCAN",
+    key,
+    int.to_string(cursor),
+    "MATCH",
+    pattern,
+    "COUNT",
+    int.to_string(count),
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_sorted_set_member_array)
+}
+
+pub fn zrem(
+  conn: Connection,
+  key: String,
+  members: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["ZREM", key, ..members]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn zrandmember(
+  conn: Connection,
+  key: String,
+  count: Int,
+  timeout: Int,
+) -> Result(List(#(String, Score)), Error) {
+  ["ZRANDMEMBER", key, int.to_string(count), "WITHSCORES"]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_sorted_set_member_array)
+}
+
+pub fn zpopmin(
+  conn: Connection,
+  key: String,
+  count: Int,
+  timeout: Int,
+) -> Result(List(#(String, Score)), Error) {
+  ["ZPOPMIN", key, int.to_string(count), "WITHSCORES"]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_sorted_set_member_array)
+}
+
+pub fn zpopmax(
+  conn: Connection,
+  key: String,
+  count: Int,
+  timeout: Int,
+) -> Result(List(#(String, Score)), Error) {
+  ["ZPOPMAX", key, int.to_string(count), "WITHSCORES"]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_sorted_set_member_array)
+}
+
+pub type Bound(a) {
+  Inclusive(a)
+  Exclusive(a)
+}
+
+fn bound_to_string(bound: Bound(a), to_string_func: fn(a) -> String) -> String {
+  case bound {
+    Inclusive(value) -> to_string_func(value)
+    Exclusive(value) -> "(" <> to_string_func(value)
+  }
+}
+
+pub fn generic_zrange(
+  conn: Connection,
+  key: String,
+  start: Bound(a),
+  stop: Bound(a),
+  bound_value_to_string: fn(a) -> String,
+  by: String,
+  reverse: Bool,
+  timeout: Int,
+) -> Result(List(#(String, Score)), Error) {
+  let modifiers = case reverse {
+    True -> ["REV", "WITHSCORES"]
+    False -> ["WITHSCORES"]
+  }
+  [
+    "ZRANGE",
+    key,
+    bound_to_string(start, bound_value_to_string),
+    bound_to_string(stop, bound_value_to_string),
+    by,
+    ..modifiers
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_sorted_set_member_array)
+}
+
+pub fn zrange_bylex(
+  conn: Connection,
+  key: String,
+  start: Bound(Int),
+  stop: Bound(Int),
+  reverse: Bool,
+  timeout: Int,
+) -> Result(List(#(String, Score)), Error) {
+  generic_zrange(
+    conn,
+    key,
+    start,
+    stop,
+    int.to_string,
+    "BYLEX",
+    reverse,
+    timeout,
+  )
+}
+
+pub fn zrange_byscore(
+  conn: Connection,
+  key: String,
+  start: Bound(Score),
+  stop: Bound(Score),
+  reverse: Bool,
+  timeout: Int,
+) -> Result(List(#(String, Score)), Error) {
+  generic_zrange(
+    conn,
+    key,
+    start,
+    stop,
+    score_to_string,
+    "BYSCORE",
+    reverse,
+    timeout,
+  )
+}
+
+pub fn zrank(
+  conn: Connection,
+  key: String,
+  member: String,
+  timeout: Int,
+) -> Result(#(Int, Score), Error) {
+  ["ZRANK", key, member, "WITHSCORE"]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_rank_and_score)
+}
+
+pub fn zrevrank(
+  conn: Connection,
+  key: String,
+  member: String,
+  timeout: Int,
+) -> Result(#(Int, Score), Error) {
+  ["ZREVRANK", key, member, "WITHSCORE"]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_rank_and_score)
 }
 
 // -------------------------- //
