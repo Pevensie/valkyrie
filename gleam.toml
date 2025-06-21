@@ -1,5 +1,5 @@
 name = "valkyrie"
-version = "0.1.0"
+version = "1.0.0-rc1"
 
 description = "A Gleam client for Valkey, KeyDB, Redis and other tools with compatible APIs."
 gleam = ">= 1.11.0"
