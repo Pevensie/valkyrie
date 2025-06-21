@@ -57,18 +57,27 @@ fn auth_to_options_list(auth: Auth) -> List(String) {
   }
 }
 
+/// Create a default Redis configuration.
+///
+/// Returns a configuration with:
+/// - host: "localhost"
+/// - port: 6379
+/// - auth: NoAuth
 pub fn default_config() -> Config {
   Config(host: "localhost", port: 6379, auth: NoAuth)
 }
 
+/// Update the host in a Redis configuration.
 pub fn host(config: Config, host: String) -> Config {
   Config(..config, host:)
 }
 
+/// Update the port in a Redis configuration.
 pub fn port(config: Config, port: Int) -> Config {
   Config(..config, port:)
 }
 
+/// Update the authentication settings in a Redis configuration.
 pub fn auth(config: Config, auth: Auth) -> Config {
   Config(..config, auth:)
 }
@@ -183,6 +192,10 @@ fn create_socket(config: Config, timeout: Int) -> Result(mug.Socket, Error) {
   Ok(socket)
 }
 
+/// Create a single Redis connection.
+///
+/// This establishes a direct connection to Redis using the provided configuration.
+/// For high-throughput applications, consider using `start_pool()` instead.
 pub fn create_connection(
   config: Config,
   timeout: Int,
@@ -191,7 +204,7 @@ pub fn create_connection(
   |> result.map(Single)
 }
 
-pub fn create_pool_builder(
+fn create_pool_builder(
   config: Config,
   pool_size: Int,
   init_timeout: Int,
@@ -208,6 +221,12 @@ pub fn create_pool_builder(
   })
 }
 
+/// Start a connection pool for Redis connections.
+///
+/// **Note:** Consider using [`supervised_pool`](#supervised_pool) instead, which
+/// provides automatic restart capabilities and better integration with OTP supervision
+/// trees. This function should only be used when you need to manage the pool lifecycle
+/// manually.
 pub fn start_pool(
   config: Config,
   pool_size: Int,
@@ -218,6 +237,20 @@ pub fn start_pool(
   |> result.map(Pooled)
 }
 
+/// Create a supervised connection pool for Redis connections.
+///
+/// Returns a supervision specification for integrating the pool into an OTP
+/// supervision tree. The pool will be automatically restarted if it crashes,
+/// making this the recommended approach for production applications.
+///
+/// The selector returned can be used to retrieve the [`Connection`](#Connection)
+/// value once the pool has started.
+///
+/// ## Example
+///
+/// ```gleam
+/// TODO
+/// ```
 pub fn supervised_pool(
   config: Config,
   pool_size: Int,
@@ -238,6 +271,10 @@ pub fn supervised_pool(
   #(spec, selector)
 }
 
+/// Shut down a Redis connection or connection pool.
+///
+/// For single connections, closes the socket immediately.
+/// For pooled connections, gracefully shuts down the pool with a 1 second timeout.
 pub fn shutdown(conn: Connection) -> Result(Nil, Nil) {
   case conn {
     Single(socket) -> mug.shutdown(socket) |> result.replace_error(Nil)
@@ -500,7 +537,18 @@ fn expect_key_type(value) {
 // ----- Escape hatch functions ----- //
 // ---------------------------------- //
 
-/// Execute a command not already covered by `valkyrie`.
+/// Execute a custom Redis command not already covered by `valkyrie`.
+///
+/// This function allows you to send any Redis command by providing
+/// the command parts as a list of strings. Useful for new Redis commands
+/// or extensions not yet supported by the library.
+///
+/// ## Example
+///
+/// ```gleam
+/// // Execute a custom command like "CONFIG GET maxmemory"
+/// let assert Ok(result) = custom(conn, ["CONFIG", "GET", "maxmemory"], 5000)
+/// ```
 pub fn custom(
   conn: Connection,
   parts: List(String),
@@ -533,7 +581,12 @@ fn key_type_to_string(key_type: KeyType) {
   }
 }
 
-/// see [here](https://redis.io/commands/keys)!
+/// Return all keys matching a pattern.
+///
+/// **Warning:** This command can be slow on large databases. Consider using
+/// `scan()` or `scan_pattern()` for production use.
+///
+/// See the [Redis KEYS documentation](https://redis.io/commands/keys) for more details.
 pub fn keys(
   conn: Connection,
   pattern: String,
@@ -567,7 +620,12 @@ pub fn keys(
   }
 }
 
-/// see [here](https://redis.io/commands/scan)!
+/// Iterate incrementally over keys in the database.
+///
+/// Returns a tuple of `#(keys, next_cursor)`. Use the returned cursor
+/// for subsequent calls. A cursor of 0 indicates the end of iteration.
+///
+/// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
 pub fn scan(
   conn: Connection,
   cursor: Int,
@@ -579,7 +637,12 @@ pub fn scan(
   |> result.try(expect_cursor_and_array)
 }
 
-/// see [here](https://redis.io/commands/scan)!
+/// Iterate incrementally over keys matching a pattern.
+///
+/// Like `scan()` but only returns keys that match the given pattern.
+/// Returns a tuple of `#(keys, next_cursor)`.
+///
+/// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
 pub fn scan_pattern(
   conn: Connection,
   cursor: Int,
@@ -599,7 +662,12 @@ pub fn scan_pattern(
   |> result.try(expect_cursor_and_array)
 }
 
-/// see [here](https://redis.io/commands/scan)!
+/// Iterate incrementally over keys of a specific type.
+///
+/// Like `scan()` but only returns keys of the specified type.
+/// Returns a tuple of `#(keys, next_cursor)`.
+///
+/// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
 pub fn scan_with_type(
   conn: Connection,
   cursor: Int,
@@ -619,7 +687,12 @@ pub fn scan_with_type(
   |> result.try(expect_cursor_and_array)
 }
 
-/// see [here](https://redis.io/commands/scan)!
+/// Iterate incrementally over keys matching a pattern and type.
+///
+/// Combines pattern matching and type filtering in a single scan operation.
+/// Returns a tuple of `#(keys, next_cursor)`.
+///
+/// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
 pub fn scan_pattern_with_type(
   conn: Connection,
   cursor: Int,
@@ -642,7 +715,11 @@ pub fn scan_pattern_with_type(
   |> result.try(expect_cursor_and_array)
 }
 
-/// see [here](https://redis.io/commands/exists)!
+/// Check if one or more keys exist.
+///
+/// Returns the number of keys that exist from the given list.
+///
+/// See the [Redis EXISTS documentation](https://redis.io/commands/exists) for more details.
 pub fn exists(
   conn: Connection,
   keys: List(String),
@@ -653,14 +730,23 @@ pub fn exists(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/get)!
+/// Get the value of a key.
+///
+/// Returns `Error(NotFound)` if the key doesn't exist.
+///
+/// See the [Redis GET documentation](https://redis.io/commands/get) for more details.
 pub fn get(conn: Connection, key: String, timeout: Int) -> Result(String, Error) {
   ["GET", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_any_nullable_string)
 }
 
-/// see [here](https://redis.io/commands/mget)!
+/// Get the values of multiple keys.
+///
+/// Returns `Error(NotFound)` if any of the keys don't exist.
+/// For handling missing keys gracefully, use `custom()` with MGET.
+///
+/// See the [Redis MGET documentation](https://redis.io/commands/mget) for more details.
 pub fn mget(
   conn: Connection,
   keys: List(String),
@@ -690,7 +776,12 @@ pub fn mget(
   }
 }
 
-/// see [here](https://redis.io/commands/append)!
+/// Append a value to a key.
+///
+/// If the key doesn't exist, it creates a new key with the given value.
+/// Returns the new length of the string after appending.
+///
+/// See the [Redis APPEND documentation](https://redis.io/commands/append) for more details.
 pub fn append(
   conn: Connection,
   key: String,
@@ -745,7 +836,26 @@ pub fn default_set_options() -> SetOptions {
   )
 }
 
-/// see [here](https://redis.io/commands/set)!
+/// Set the value of a key with optional conditions and expiry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Basic set
+/// let assert Ok(_) = set(conn, "key", "value", option.None, 5000)
+///
+/// // Set with expiry
+/// let options = default_set_options()
+///   |> SetOptions(.._, expiry_option: option.Some(ExpirySeconds(300)))
+/// let assert Ok(_) = set(conn, "key", "value", option.Some(options), 5000)
+///
+/// // Set only if key doesn't exist
+/// let options = default_set_options()
+///   |> SetOptions(.._, existence_condition: option.Some(IfNotExists))
+/// let assert Ok(_) = set(conn, "key", "value", option.Some(options), 5000)
+/// ```
+///
+/// See the [Redis SET documentation](https://redis.io/commands/set) for more details.
 pub fn set(
   conn: Connection,
   key: String,
@@ -789,7 +899,11 @@ pub fn set(
   |> result.try(expect_any_nullable_string)
 }
 
-/// see [here](https://redis.io/commands/mset)!
+/// Set multiple key-value pairs atomically.
+///
+/// All keys are set in a single atomic operation.
+///
+/// See the [Redis MSET documentation](https://redis.io/commands/mset) for more details.
 pub fn mset(
   conn: Connection,
   kv_list: List(#(String, String)),
@@ -805,7 +919,11 @@ pub fn mset(
   |> result.try(expect_any_string)
 }
 
-/// see [here](https://redis.io/commands/del)!
+/// Delete one or more keys.
+///
+/// Returns the number of keys that were actually deleted.
+///
+/// See the [Redis DEL documentation](https://redis.io/commands/del) for more details.
 pub fn del(
   conn: Connection,
   keys: List(String),
@@ -825,14 +943,24 @@ pub fn del(
   }
 }
 
-/// see [here](https://redis.io/commands/incr)!
+/// Increment the integer value of a key by 1.
+///
+/// If the key doesn't exist, it's set to 0 before incrementing.
+/// Returns the new value after incrementing.
+///
+/// See the [Redis INCR documentation](https://redis.io/commands/incr) for more details.
 pub fn incr(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
   ["INCR", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/incrby)!
+/// Increment the integer value of a key by the given amount.
+///
+/// If the key doesn't exist, it's set to 0 before incrementing.
+/// Returns the new value after incrementing.
+///
+/// See the [Redis INCRBY documentation](https://redis.io/commands/incrby) for more details.
 pub fn incrby(
   conn: Connection,
   key: String,
@@ -844,7 +972,12 @@ pub fn incrby(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/incrbyfloat)!
+/// Increment the floating point value of a key by the given amount.
+///
+/// If the key doesn't exist, it's set to 0 before incrementing.
+/// Returns the new value after incrementing.
+///
+/// See the [Redis INCRBYFLOAT documentation](https://redis.io/commands/incrbyfloat) for more details.
 pub fn incrbyfloat(
   conn: Connection,
   key: String,
@@ -856,14 +989,24 @@ pub fn incrbyfloat(
   |> result.try(expect_float)
 }
 
-/// see [here](https://redis.io/commands/decr)!
+/// Decrement the integer value of a key by 1.
+///
+/// If the key doesn't exist, it's set to 0 before decrementing.
+/// Returns the new value after decrementing.
+///
+/// See the [Redis DECR documentation](https://redis.io/commands/decr) for more details.
 pub fn decr(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
   ["DECR", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/decrby)!
+/// Decrement the integer value of a key by the given amount.
+///
+/// If the key doesn't exist, it's set to 0 before decrementing.
+/// Returns the new value after decrementing.
+///
+/// See the [Redis DECRBY documentation](https://redis.io/commands/decrby) for more details.
 pub fn decr_by(
   conn: Connection,
   key: String,
@@ -875,14 +1018,22 @@ pub fn decr_by(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/randomkey)!
+/// Return a random key from the database.
+///
+/// Returns `Error(NotFound)` if the database is empty.
+///
+/// See the [Redis RANDOMKEY documentation](https://redis.io/commands/randomkey) for more details.
 pub fn random_key(conn: Connection, timeout: Int) -> Result(String, Error) {
   ["RANDOMKEY"]
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_bulk_string)
 }
 
-/// see [here](https://redis.io/commands/type)!
+/// Get the type of a key.
+///
+/// Returns the data type stored at the key.
+///
+/// See the [Redis TYPE documentation](https://redis.io/commands/type) for more details.
 pub fn key_type(
   conn: Connection,
   key: String,
@@ -893,7 +1044,12 @@ pub fn key_type(
   |> result.try(expect_key_type)
 }
 
-/// see [here](https://redis.io/commands/rename)!
+/// Rename a key.
+///
+/// If the new key already exists, it will be overwritten.
+/// Returns an error if the source key doesn't exist.
+///
+/// See the [Redis RENAME documentation](https://redis.io/commands/rename) for more details.
 pub fn rename(
   conn: Connection,
   key: String,
@@ -905,7 +1061,11 @@ pub fn rename(
   |> result.try(expect_simple_string)
 }
 
-/// see [here](https://redis.io/commands/renamenx)!
+/// Rename a key only if the new key doesn't exist.
+///
+/// Returns 1 if the key was renamed, 0 if the new key already exists.
+///
+/// See the [Redis RENAMENX documentation](https://redis.io/commands/renamenx) for more details.
 pub fn renamenx(
   conn: Connection,
   key: String,
@@ -917,7 +1077,11 @@ pub fn renamenx(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/persist)!
+/// Remove the expiration from a key.
+///
+/// Returns 1 if the timeout was removed, 0 if the key doesn't exist or has no timeout.
+///
+/// See the [Redis PERSIST documentation](https://redis.io/commands/persist) for more details.
 pub fn persist(
   conn: Connection,
   key: String,
@@ -928,8 +1092,12 @@ pub fn persist(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/ping)!
-/// for use with a custom message, use `ping_message/3`.
+/// Ping the Redis server.
+///
+/// Returns "PONG" if the server is responding.
+/// For use with a custom message, use `ping_message()`.
+///
+/// See the [Redis PING documentation](https://redis.io/commands/ping) for more details.
 pub fn ping(conn: Connection, timeout: Int) -> Result(String, Error) {
   ["PING"]
   |> execute(conn, _, timeout)
@@ -944,7 +1112,11 @@ pub fn ping(conn: Connection, timeout: Int) -> Result(String, Error) {
   })
 }
 
-/// see [here](https://redis.io/commands/ping)!
+/// Ping the Redis server with a custom message.
+///
+/// Returns the same message if the server is responding.
+///
+/// See the [Redis PING documentation](https://redis.io/commands/ping) for more details.
 pub fn ping_message(
   conn: Connection,
   message: String,
@@ -974,7 +1146,12 @@ pub type ExpireCondition {
   IfLessThan
 }
 
-/// see [here](https://redis.io/commands/expire)!
+/// Set a timeout on a key.
+///
+/// The timeout is specified in seconds. Returns 1 if the timeout was set,
+/// 0 if the key doesn't exist or the condition wasn't met.
+///
+/// See the [Redis EXPIRE documentation](https://redis.io/commands/expire) for more details.
 pub fn expire(
   conn: Connection,
   key: String,
@@ -999,7 +1176,11 @@ pub fn expire(
 // ----- List functions ----- //
 // -------------------------- //
 
-/// see [here](https://redis.io/commands/lpush)!
+/// Push one or more values to the left (head) of a list.
+///
+/// Creates the list if it doesn't exist. Returns the new length of the list.
+///
+/// See the [Redis LPUSH documentation](https://redis.io/commands/lpush) for more details.
 pub fn lpush(
   conn: Connection,
   key: String,
@@ -1011,7 +1192,11 @@ pub fn lpush(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/rpush)!
+/// Push one or more values to the right (tail) of a list.
+///
+/// Creates the list if it doesn't exist. Returns the new length of the list.
+///
+/// See the [Redis RPUSH documentation](https://redis.io/commands/rpush) for more details.
 pub fn rpush(
   conn: Connection,
   key: String,
@@ -1023,7 +1208,11 @@ pub fn rpush(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/lpushx)!
+/// Push values to the left (head) of a list, only if the list already exists.
+///
+/// Returns 0 if the key doesn't exist, otherwise returns the new length of the list.
+///
+/// See the [Redis LPUSHX documentation](https://redis.io/commands/lpushx) for more details.
 pub fn lpushx(
   conn: Connection,
   key: String,
@@ -1035,7 +1224,11 @@ pub fn lpushx(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/rpushx)!
+/// Push values to the right (tail) of a list, only if the list already exists.
+///
+/// Returns 0 if the key doesn't exist, otherwise returns the new length of the list.
+///
+/// See the [Redis RPUSHX documentation](https://redis.io/commands/rpushx) for more details.
 pub fn rpushx(
   conn: Connection,
   key: String,
@@ -1047,13 +1240,23 @@ pub fn rpushx(
   |> result.try(expect_integer)
 }
 
+/// Get the length of a list.
+///
+/// Returns 0 if the key doesn't exist or is not a list.
+///
+/// See the [Redis LLEN documentation](https://redis.io/commands/llen) for more details.
 pub fn llen(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
   ["LLEN", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/lrange)!
+/// Get a range of elements from a list.
+///
+/// Both start and end are zero-based indexes. Negative numbers can be used
+/// to designate elements starting from the tail of the list.
+///
+/// See the [Redis LRANGE documentation](https://redis.io/commands/lrange) for more details.
 pub fn lrange(
   conn: Connection,
   key: String,
@@ -1066,7 +1269,12 @@ pub fn lrange(
   |> result.try(expect_bulk_string_array)
 }
 
-/// see [here](https://redis.io/commands/lpop)!
+/// Remove and return an element from the left (head) of a list.
+///
+/// Returns `Error(NotFound)` if the key doesn't exist or the list is empty.
+/// This version removes exactly one element.
+///
+/// See the [Redis LPOP documentation](https://redis.io/commands/lpop) for more details.
 pub fn lpop(
   conn: Connection,
   key: String,
@@ -1092,7 +1300,12 @@ pub fn lpop(
   })
 }
 
-/// see [here](https://redis.io/commands/rpop)!
+/// Remove and return an element from the right (tail) of a list.
+///
+/// Returns `Error(NotFound)` if the key doesn't exist or the list is empty.
+/// This version removes exactly one element.
+///
+/// See the [Redis RPOP documentation](https://redis.io/commands/rpop) for more details.
 pub fn rpop(
   conn: Connection,
   key: String,
@@ -1118,7 +1331,12 @@ pub fn rpop(
   })
 }
 
-/// see [here](https://redis.io/commands/lindex)!
+/// Get an element from a list by its index.
+///
+/// Index is zero-based. Negative indices count from the end (-1 is the last element).
+/// Returns `Error(NotFound)` if the index is out of range.
+///
+/// See the [Redis LINDEX documentation](https://redis.io/commands/lindex) for more details.
 pub fn lindex(
   conn: Connection,
   key: String,
@@ -1130,7 +1348,15 @@ pub fn lindex(
   |> result.try(expect_nullable_bulk_string)
 }
 
-/// see [here](https://redis.io/commands/lrem)!
+/// Remove elements equal to value from a list.
+///
+/// - count > 0: Remove elements equal to value moving from head to tail
+/// - count < 0: Remove elements equal to value moving from tail to head
+/// - count = 0: Remove all elements equal to value
+///
+/// Returns the number of removed elements.
+///
+/// See the [Redis LREM documentation](https://redis.io/commands/lrem) for more details.
 pub fn lrem(
   conn: Connection,
   key: String,
@@ -1143,7 +1369,11 @@ pub fn lrem(
   |> result.try(expect_integer)
 }
 
-/// see [here](https://redis.io/commands/lset)!
+/// Set the value of an element in a list by its index.
+///
+/// Index is zero-based. Returns an error if the index is out of range.
+///
+/// See the [Redis LSET documentation](https://redis.io/commands/lset) for more details.
 pub fn lset(
   conn: Connection,
   key: String,
@@ -1161,7 +1391,12 @@ pub type InsertPosition {
   After
 }
 
-/// see [here](https://redis.io/commands/linsert)!
+/// Insert an element before or after another element in a list.
+///
+/// Returns the new length of the list, or -1 if the pivot element wasn't found.
+/// Returns 0 if the key doesn't exist.
+///
+/// See the [Redis LINSERT documentation](https://redis.io/commands/linsert) for more details.
 pub fn linsert(
   conn: Connection,
   key: String,
