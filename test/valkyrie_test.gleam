@@ -23,7 +23,7 @@ fn get_test_conn(next: fn(valkyrie.Connection) -> a) -> a {
 }
 
 // Helper to clean up test keys
-fn cleanup_keys(conn, keys) {
+fn cleanup_keys(conn: valkyrie.Connection, keys: List(String)) -> Nil {
   case keys {
     [] -> Nil
     _ -> {
@@ -44,8 +44,143 @@ pub fn create_connection_test() {
 }
 
 pub fn pool_connection_test() {
-  use conn <- get_test_conn()
+  use client <- get_test_conn()
+  let assert Ok("PONG") = valkyrie.ping(client, 1000)
+}
+
+// URL Parsing Tests
+pub fn url_config_basic_test() {
+  // Test basic redis:// URL
+  let assert Ok(config) = valkyrie.url_config("redis://localhost:6379")
+  config.host |> should.equal("localhost")
+  config.port |> should.equal(6379)
+  config.auth |> should.equal(valkyrie.NoAuth)
+}
+
+pub fn url_config_supported_schemes_test() {
+  // Test redis://
+  let assert Ok(config1) = valkyrie.url_config("redis://localhost:6379")
+  config1.host |> should.equal("localhost")
+
+  // Test valkey://
+  let assert Ok(config2) = valkyrie.url_config("valkey://localhost:6379")
+  config2.host |> should.equal("localhost")
+
+  // Test keydb://
+  let assert Ok(config3) = valkyrie.url_config("keydb://localhost:6379")
+  config3.host |> should.equal("localhost")
+}
+
+pub fn url_config_default_port_test() {
+  // Test URL without port (should default to 6379)
+  let assert Ok(config) = valkyrie.url_config("redis://localhost")
+  config.host |> should.equal("localhost")
+  config.port |> should.equal(6379)
+  config.auth |> should.equal(valkyrie.NoAuth)
+}
+
+pub fn url_config_custom_port_test() {
+  // Test URL with custom port
+  let assert Ok(config) = valkyrie.url_config("redis://localhost:6380")
+  config.host |> should.equal("localhost")
+  config.port |> should.equal(6380)
+  config.auth |> should.equal(valkyrie.NoAuth)
+}
+
+pub fn url_config_password_only_test() {
+  // Test URL with password only
+  let assert Ok(config) =
+    valkyrie.url_config("redis://:mypassword@localhost:6379")
+  config.host |> should.equal("localhost")
+  config.port |> should.equal(6379)
+  config.auth |> should.equal(valkyrie.PasswordOnly("mypassword"))
+}
+
+pub fn url_config_username_password_test() {
+  // Test URL with username and password
+  let assert Ok(config) =
+    valkyrie.url_config("redis://user:pass@localhost:6379")
+  config.host |> should.equal("localhost")
+  config.port |> should.equal(6379)
+  config.auth |> should.equal(valkyrie.UsernameAndPassword("user", "pass"))
+}
+
+pub fn url_config_complex_credentials_test() {
+  // Test URL with complex username and password (avoiding @ in password for URI parsing)
+  let assert Ok(config) =
+    valkyrie.url_config("redis://my_user:my_p4ssw0rd@192.168.1.100:6380")
+  config.host |> should.equal("192.168.1.100")
+  config.port |> should.equal(6380)
+  config.auth
+  |> should.equal(valkyrie.UsernameAndPassword("my_user", "my_p4ssw0rd"))
+}
+
+pub fn url_config_ip_address_test() {
+  // Test URL with IP address
+  let assert Ok(config) = valkyrie.url_config("redis://192.168.1.100:6379")
+  config.host |> should.equal("192.168.1.100")
+  config.port |> should.equal(6379)
+  config.auth |> should.equal(valkyrie.NoAuth)
+}
+
+pub fn url_config_error_cases_test() {
+  // Test invalid scheme
+  let assert Error(valkyrie.UnsupportedScheme) =
+    valkyrie.url_config("http://localhost:6379")
+
+  // Test missing scheme (URI parser treats "localhost" as scheme)
+  let assert Error(valkyrie.UnsupportedScheme) =
+    valkyrie.url_config("localhost:6379")
+
+  // Test missing host
+  let assert Error(valkyrie.MissingHost) = valkyrie.url_config("redis://:6379")
+
+  // Test invalid URI
+  let assert Error(valkyrie.InvalidUriFormat) =
+    valkyrie.url_config("not a valid uri")
+}
+
+pub fn url_config_specific_errors_test() {
+  // Test empty host
+  let assert Error(valkyrie.MissingHost) = valkyrie.url_config("redis://")
+
+  // Test different unsupported schemes
+  let assert Error(valkyrie.UnsupportedScheme) =
+    valkyrie.url_config("https://localhost:6379")
+
+  let assert Error(valkyrie.UnsupportedScheme) =
+    valkyrie.url_config("mysql://localhost:6379")
+
+  // Test truly missing scheme (relative URI)
+  let assert Error(valkyrie.MissingScheme) =
+    valkyrie.url_config("//localhost:6379")
+
+  // Test missing host with valid scheme
+  let assert Error(valkyrie.MissingHost) = valkyrie.url_config("redis:")
+
+  // Test malformed URI
+  let assert Error(valkyrie.InvalidUriFormat) =
+    valkyrie.url_config("redis://[invalid")
+}
+
+pub fn url_config_with_database_test() {
+  // Test URL with database path (should be ignored but not cause error)
+  let assert Ok(config) = valkyrie.url_config("redis://localhost:6379/0")
+  config.host |> should.equal("localhost")
+  config.port |> should.equal(6379)
+  config.auth |> should.equal(valkyrie.NoAuth)
+}
+
+pub fn url_config_integration_test() {
+  // Test that url_config creates a working connection
+  let assert Ok(config) = valkyrie.url_config("redis://localhost:6379")
+  let assert Ok(conn) = config |> valkyrie.create_connection(1000)
+
+  // Test that the connection works
   let assert Ok("PONG") = valkyrie.ping(conn, 1000)
+
+  // Clean up
+  let assert Ok(_) = valkyrie.shutdown(conn)
 }
 
 // Basic String Operations
