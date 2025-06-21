@@ -1,0 +1,116 @@
+import gleam/bit_array
+import gleeunit/should
+import valkyrie/internal/protocol
+
+/// This was a specific failure case for Radish mentioned in this issue:
+/// https://github.com/massivefermion/radish/issues/12
+///
+/// This failed because the Radish implementation of the protocol couldn't handle empty
+/// strings or messages without a trailing CRLF.
+pub fn can_decode_redis_8_hello_3_test() {
+  // %7
+  // $6
+  // server
+  // $5
+  // redis
+  // $7
+  // version
+  // $5
+  // 8.0.2
+  // $5
+  // proto
+  // :3
+  // $2
+  // id
+  // :13
+  // $4
+  // mode
+  // $10
+  // standalone
+  // $4
+  // role
+  // $6
+  // master
+  // $7
+  // modules
+  // *5
+  // %4
+  // $4
+  // name
+  // $6
+  // search
+  // $3
+  // ver
+  // :80001
+  // $4
+  // path
+  // $43
+  // /usr/local/lib/redis/modules//redisearch.so
+  // $4
+  // args
+  // *0
+  // %4
+  // $4
+  // name
+  // $2
+  // bf
+  // $3
+  // ver
+  // :80001
+  // $4
+  // path
+  // $43
+  // /usr/local/lib/redis/modules//redisbloom.so
+  // $4
+  // args
+  // *0
+  // %4
+  // $4
+  // name
+  // $10
+  // timeseries
+  // $3
+  // ver
+  // :80001
+  // $4
+  // path
+  // $48
+  // /usr/local/lib/redis/modules//redistimeseries.so
+  // $4
+  // args
+  // *0
+  // %4
+  // $4
+  // name
+  // $9
+  // vectorset
+  // $3
+  // ver
+  // :1
+  // $4
+  // path
+  // $0
+  //
+  // $4
+  // args
+  // *0
+  // %4
+  // $4
+  // name
+  // $6
+  // ReJSON
+  // $3
+  // ver
+  // :80001
+  // $4
+  // path
+  // $39
+  // /usr/local/lib/redis/modules//rejson.so
+  // $4
+  // args
+  // *0
+  "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$5\r\n8.0.2\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:13\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*5\r\n%4\r\n$4\r\nname\r\n$6\r\nsearch\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$43\r\n/usr/local/lib/redis/modules//redisearch.so\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$2\r\nbf\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$43\r\n/usr/local/lib/redis/modules//redisbloom.so\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$10\r\ntimeseries\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$48\r\n/usr/local/lib/redis/modules//redistimeseries.so\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$9\r\nvectorset\r\n$3\r\nver\r\n:1\r\n$4\r\npath\r\n$0\r\n\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$6\r\nReJSON\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$39\r\n/usr/local/lib/redis/modules//rejson.so\r\n$4\r\nargs\r\n*0"
+  |> bit_array.from_string
+  |> protocol.decode_value
+  |> should.be_ok
+}

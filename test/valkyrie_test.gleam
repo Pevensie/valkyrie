@@ -16,7 +16,7 @@ pub fn main() {
 fn get_test_conn(next: fn(valkyrie.Connection) -> a) -> a {
   let assert Ok(conn) =
     valkyrie.default_config()
-    |> valkyrie.start_pool(3, 128)
+    |> valkyrie.start_pool(3, 1000)
 
   let res = next(conn)
   let assert Ok(_) = valkyrie.shutdown(conn)
@@ -27,7 +27,7 @@ fn get_supervised_conn(next: fn(valkyrie.Connection) -> a) -> a {
   let connection_subject = process.new_subject()
   let child_spec =
     valkyrie.default_config()
-    |> valkyrie.supervised_pool(connection_subject, 3, 128)
+    |> valkyrie.supervised_pool(connection_subject, 3, 1000)
 
   let assert Ok(_started) =
     static_supervisor.new(static_supervisor.OneForOne)

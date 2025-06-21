@@ -2,7 +2,7 @@ name = "valkyrie"
 version = "0.1.0"
 
 description = "A Gleam client for Valkey, KeyDB, Redis and other tools with compatible APIs."
-gleam = ">= 1.4.0"
+gleam = ">= 1.11.0"
 licences = ["Apache-2.0"]
 links = [
     { title = "Gleam", href = "https://gleam.run" },
