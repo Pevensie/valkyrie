@@ -2,6 +2,7 @@
 
 import bath
 import gleam/bit_array
+import gleam/dict
 import gleam/erlang/process
 import gleam/float
 import gleam/int
@@ -464,7 +465,9 @@ fn expect_simple_string(value: List(protocol.Value)) -> Result(String, Error) {
   }
 }
 
-fn expect_nullable_bulk_string(value) {
+fn expect_nullable_bulk_string(
+  value: List(protocol.Value),
+) -> Result(String, Error) {
   case value {
     [protocol.BulkString(str)] -> Ok(str)
     [protocol.Null] -> Error(NotFound)
@@ -515,6 +518,29 @@ fn expect_bulk_string_array(
   }
 }
 
+fn expect_nullable_bulk_string_array(
+  value: List(protocol.Value),
+) -> Result(List(Result(String, Error)), Error) {
+  case value {
+    [protocol.Array(array)] ->
+      list.map(array, fn(item) {
+        case item {
+          protocol.BulkString(str) -> Ok(str)
+          protocol.Null -> Error(NotFound)
+          _ ->
+            Error(
+              ProtocolError(
+                protocol.error_string(expected: "string or null", got: [item]),
+              ),
+            )
+        }
+      })
+      |> Ok
+    _ ->
+      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+  }
+}
+
 fn expect_bulk_string_set(
   value: List(protocol.Value),
 ) -> Result(set.Set(String), Error) {
@@ -553,6 +579,20 @@ fn expect_key_type(value) {
     _ ->
       Error(
         ProtocolError(protocol.error_string(expected: "key type", got: value)),
+      )
+  }
+}
+
+fn expect_map(value) {
+  case value {
+    [protocol.Map(map)] -> Ok(map)
+    [protocol.Array([])] -> Error(NotFound)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "map or empty array",
+          got: value,
+        )),
       )
   }
 }
@@ -767,37 +807,18 @@ pub fn get(conn: Connection, key: String, timeout: Int) -> Result(String, Error)
 
 /// Get the values of multiple keys.
 ///
-/// Returns `Error(NotFound)` if any of the keys don't exist.
-/// For handling missing keys gracefully, use `custom()` with MGET.
+/// Returns a list of `Result(String, Error)` values. The value will be
+/// `Error(NotFound)` if the key doesn't exist.
 ///
 /// See the [Redis MGET documentation](https://redis.io/commands/mget) for more details.
 pub fn mget(
   conn: Connection,
   keys: List(String),
   timeout: Int,
-) -> Result(List(String), Error) {
-  use value <- result.try(
-    ["MGET", ..keys]
-    |> execute(conn, _, timeout),
-  )
-
-  case value {
-    [protocol.Array(array)] ->
-      list.try_map(array, fn(item) {
-        case item {
-          protocol.BulkString(str) -> Ok(str)
-          protocol.Null -> Error(NotFound)
-          _ ->
-            Error(
-              ProtocolError(
-                protocol.error_string(expected: "string or null", got: [item]),
-              ),
-            )
-        }
-      })
-    _ ->
-      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
-  }
+) -> Result(List(Result(String, Error)), Error) {
+  ["MGET", ..keys]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_bulk_string_array)
 }
 
 /// Append a string to the value at the given key.
@@ -1501,6 +1522,181 @@ pub fn sscan_pattern(
 ) -> Result(#(List(String), Int), Error) {
   [
     "SSCAN",
+    key,
+    int.to_string(cursor),
+    "MATCH",
+    pattern,
+    "COUNT",
+    int.to_string(count),
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
+}
+
+// -------------------------- //
+// ----- Hash functions ----- //
+// -------------------------- //
+
+pub fn hset(
+  conn: Connection,
+  key: String,
+  values: dict.Dict(String, String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  let values =
+    values
+    |> dict.to_list
+    |> list.flat_map(fn(item) { [item.0, item.1] })
+
+  ["HSET", key, ..values]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn hsetnx(
+  conn: Connection,
+  key: String,
+  field: String,
+  value: String,
+  timeout: Int,
+) -> Result(Bool, Error) {
+  ["HSETNX", key, field, value]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer_boolean)
+}
+
+pub fn hlen(conn, key, timeout) {
+  ["HLEN", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn hkeys(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+) -> Result(List(String), Error) {
+  ["HKEYS", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_bulk_string_array)
+}
+
+pub fn hget(
+  conn: Connection,
+  key: String,
+  field: String,
+  timeout: Int,
+) -> Result(String, Error) {
+  ["HGET", key, field]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_bulk_string)
+}
+
+pub fn hgetall(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+  // TODO: expose protocol, probably
+) -> Result(dict.Dict(protocol.Value, protocol.Value), Error) {
+  ["HGETALL", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_map)
+}
+
+pub fn hmget(
+  conn: Connection,
+  key: String,
+  fields: List(String),
+  timeout: Int,
+) -> Result(List(Result(String, Error)), Error) {
+  ["HMGET", key, ..fields]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_bulk_string_array)
+}
+
+pub fn hstrlen(
+  conn: Connection,
+  key: String,
+  field: String,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["HSTRLEN", key, field]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn hvals(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+) -> Result(List(String), Error) {
+  ["HVALS", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_bulk_string_array)
+}
+
+pub fn hdel(
+  conn: Connection,
+  key: String,
+  fields: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["HDEL", key, ..fields]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn hexists(
+  conn: Connection,
+  key: String,
+  field: String,
+  timeout: Int,
+) -> Result(Bool, Error) {
+  ["HEXISTS", key, field]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer_boolean)
+}
+
+pub fn hincrby(
+  conn: Connection,
+  key: String,
+  field: String,
+  value: Int,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["HINCRBY", key, field, int.to_string(value)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn hincrbyfloat(conn, key, field, value, timeout) {
+  ["HINCRBYFLOAT", key, field, float.to_string(value)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_float)
+}
+
+pub fn hscan(
+  conn: Connection,
+  key: String,
+  cursor: Int,
+  count: Int,
+  timeout: Int,
+) -> Result(#(List(String), Int), Error) {
+  ["HSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
+}
+
+pub fn hscan_pattern(
+  conn: Connection,
+  key: String,
+  cursor: Int,
+  pattern: String,
+  count: Int,
+  timeout: Int,
+) -> Result(#(List(String), Int), Error) {
+  [
+    "HSCAN",
     key,
     int.to_string(cursor),
     "MATCH",

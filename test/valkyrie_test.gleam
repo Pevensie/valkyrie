@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -263,11 +264,16 @@ pub fn mset_mget_test() {
   let assert Ok("OK") = conn |> valkyrie.mset(pairs, 1000)
 
   // mget only with existing keys - it returns an error if any key is missing
-  let keys = ["test:mset:1", "test:mset:2", "test:mset:3"]
+  let keys = ["test:mset:1", "test:mset:2", "test:mset:3", "test:mset:4"]
   let assert Ok(values) = conn |> valkyrie.mget(keys, 1000)
 
   values
-  |> should.equal(["value1", "value2", "value3"])
+  |> should.equal([
+    Ok("value1"),
+    Ok("value2"),
+    Ok("value3"),
+    Error(valkyrie.NotFound),
+  ])
 
   cleanup_keys(conn, ["test:mset:1", "test:mset:2", "test:mset:3"])
 }
@@ -823,6 +829,391 @@ pub fn set_lifecycle_test() {
   all_members |> should.equal(expected_members)
 
   cleanup_keys(conn, ["test:set:lifecycle"])
+}
+
+// Hash Operations Tests
+
+pub fn hset_hget_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:basic"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("field1", "value1")
+    |> dict.insert("field2", "value2")
+    |> dict.insert("field3", "value3")
+
+  // Test hset with multiple fields
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:basic", hash_values, 1000)
+
+  // Verify all fields were set
+  let assert Ok(3) = valkyrie.hlen(conn, "test:hash:basic", 1000)
+
+  // Test hget for individual fields
+  let assert Ok("value1") =
+    valkyrie.hget(conn, "test:hash:basic", "field1", 1000)
+  let assert Ok("value2") =
+    valkyrie.hget(conn, "test:hash:basic", "field2", 1000)
+  let assert Ok("value3") =
+    valkyrie.hget(conn, "test:hash:basic", "field3", 1000)
+
+  // Test hget for non-existent field
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.hget(conn, "test:hash:basic", "nonexistent", 1000)
+
+  cleanup_keys(conn, ["test:hash:basic"])
+}
+
+pub fn hsetnx_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:nx"])
+
+  // Test hsetnx on new field
+  let assert Ok(True) =
+    valkyrie.hsetnx(conn, "test:hash:nx", "field1", "value1", 1000)
+
+  // Test hsetnx on existing field (should return False)
+  let assert Ok(False) =
+    valkyrie.hsetnx(conn, "test:hash:nx", "field1", "newvalue", 1000)
+
+  // Verify original value is unchanged
+  let assert Ok("value1") = valkyrie.hget(conn, "test:hash:nx", "field1", 1000)
+
+  cleanup_keys(conn, ["test:hash:nx"])
+}
+
+pub fn hlen_hkeys_hvals_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:info"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("field1", "value1")
+    |> dict.insert("field2", "value2")
+    |> dict.insert("field3", "value3")
+
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:info", hash_values, 1000)
+
+  // Test hlen
+  let assert Ok(3) = valkyrie.hlen(conn, "test:hash:info", 1000)
+
+  // Test hkeys
+  let assert Ok(keys) = valkyrie.hkeys(conn, "test:hash:info", 1000)
+  keys
+  |> list.sort(string.compare)
+  |> should.equal(["field1", "field2", "field3"])
+
+  // Test hvals
+  let assert Ok(values) = valkyrie.hvals(conn, "test:hash:info", 1000)
+  values
+  |> list.sort(string.compare)
+  |> should.equal(["value1", "value2", "value3"])
+
+  cleanup_keys(conn, ["test:hash:info"])
+}
+
+pub fn hgetall_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:getall"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("field1", "value1")
+    |> dict.insert("field2", "value2")
+
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:getall", hash_values, 1000)
+
+  // Test hgetall
+  let assert Ok(result) = valkyrie.hgetall(conn, "test:hash:getall", 1000)
+
+  // Note: hgetall returns Dict(protocol.Value, protocol.Value)
+  // We should check that it contains the expected number of entries
+  result |> dict.size |> should.equal(2)
+
+  cleanup_keys(conn, ["test:hash:getall"])
+}
+
+pub fn hmget_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:mget"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("field1", "value1")
+    |> dict.insert("field2", "value2")
+    |> dict.insert("field3", "value3")
+
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:mget", hash_values, 1000)
+
+  // Test hmget with existing and non-existing fields
+  let assert Ok(results) =
+    valkyrie.hmget(
+      conn,
+      "test:hash:mget",
+      ["field1", "nonexistent", "field3"],
+      1000,
+    )
+
+  // Check results - should have Ok values for existing fields and Error for non-existing
+  results |> list.length |> should.equal(3)
+  let assert [Ok("value1"), Error(_), Ok("value3")] = results
+
+  cleanup_keys(conn, ["test:hash:mget"])
+}
+
+pub fn hstrlen_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:strlen"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("short", "hi")
+    |> dict.insert("long", "this is a longer string")
+
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:strlen", hash_values, 1000)
+
+  // Test hstrlen
+  let assert Ok(2) = valkyrie.hstrlen(conn, "test:hash:strlen", "short", 1000)
+  let assert Ok(23) = valkyrie.hstrlen(conn, "test:hash:strlen", "long", 1000)
+
+  // Test hstrlen on non-existent field
+  let assert Ok(0) =
+    valkyrie.hstrlen(conn, "test:hash:strlen", "nonexistent", 1000)
+
+  cleanup_keys(conn, ["test:hash:strlen"])
+}
+
+pub fn hdel_hexists_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:del"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("field1", "value1")
+    |> dict.insert("field2", "value2")
+    |> dict.insert("field3", "value3")
+
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:del", hash_values, 1000)
+
+  // Test hexists before deletion
+  let assert Ok(True) = valkyrie.hexists(conn, "test:hash:del", "field1", 1000)
+  let assert Ok(True) = valkyrie.hexists(conn, "test:hash:del", "field2", 1000)
+  let assert Ok(False) =
+    valkyrie.hexists(conn, "test:hash:del", "nonexistent", 1000)
+
+  // Test hdel - delete multiple fields
+  let assert Ok(2) =
+    valkyrie.hdel(conn, "test:hash:del", ["field1", "field2"], 1000)
+
+  // Test hexists after deletion
+  let assert Ok(False) = valkyrie.hexists(conn, "test:hash:del", "field1", 1000)
+  let assert Ok(False) = valkyrie.hexists(conn, "test:hash:del", "field2", 1000)
+  let assert Ok(True) = valkyrie.hexists(conn, "test:hash:del", "field3", 1000)
+
+  // Verify hlen reflects the deletions
+  let assert Ok(1) = valkyrie.hlen(conn, "test:hash:del", 1000)
+
+  cleanup_keys(conn, ["test:hash:del"])
+}
+
+pub fn hincrby_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:incr"])
+
+  // Test hincrby on new field
+  let assert Ok(5) =
+    valkyrie.hincrby(conn, "test:hash:incr", "counter", 5, 1000)
+
+  // Test hincrby on existing field
+  let assert Ok(15) =
+    valkyrie.hincrby(conn, "test:hash:incr", "counter", 10, 1000)
+
+  // Test negative increment
+  let assert Ok(10) =
+    valkyrie.hincrby(conn, "test:hash:incr", "counter", -5, 1000)
+
+  // Verify final value
+  let assert Ok("10") = valkyrie.hget(conn, "test:hash:incr", "counter", 1000)
+
+  cleanup_keys(conn, ["test:hash:incr"])
+}
+
+pub fn hincrbyfloat_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:incrfloat"])
+
+  // Test hincrbyfloat on new field
+  let assert Ok(result1) =
+    valkyrie.hincrbyfloat(conn, "test:hash:incrfloat", "counter", 3.14, 1000)
+  result1 |> should.equal(3.14)
+
+  // Test hincrbyfloat on existing field
+  let assert Ok(result2) =
+    valkyrie.hincrbyfloat(conn, "test:hash:incrfloat", "counter", 2.86, 1000)
+  result2 |> should.equal(6.0)
+
+  // Test negative increment
+  let assert Ok(result3) =
+    valkyrie.hincrbyfloat(conn, "test:hash:incrfloat", "counter", -1.5, 1000)
+  result3 |> should.equal(4.5)
+
+  cleanup_keys(conn, ["test:hash:incrfloat"])
+}
+
+pub fn hscan_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:scan"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("field1", "value1")
+    |> dict.insert("field2", "value2")
+    |> dict.insert("field3", "value3")
+    |> dict.insert("field4", "value4")
+
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:scan", hash_values, 1000)
+
+  // Verify all fields were set
+  let assert Ok(4) = valkyrie.hlen(conn, "test:hash:scan", 1000)
+
+  // Test hscan with count
+  let assert Ok(#(items, _cursor)) =
+    valkyrie.hscan(conn, "test:hash:scan", 0, 10, 1000)
+
+  // Should return all items (field-value pairs flattened)
+  items |> list.length |> should.equal(8)
+  // 4 fields * 2 (field + value)
+
+  cleanup_keys(conn, ["test:hash:scan"])
+}
+
+pub fn hscan_pattern_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:scanpattern"])
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("prefix_field1", "value1")
+    |> dict.insert("prefix_field2", "value2")
+    |> dict.insert("other_field", "value3")
+    |> dict.insert("prefix_field3", "value4")
+
+  let assert Ok(_) =
+    valkyrie.hset(conn, "test:hash:scanpattern", hash_values, 1000)
+
+  // Verify all fields were set
+  let assert Ok(4) = valkyrie.hlen(conn, "test:hash:scanpattern", 1000)
+
+  // Test hscan with pattern matching
+  let assert Ok(#(items, _cursor)) =
+    valkyrie.hscan_pattern(
+      conn,
+      "test:hash:scanpattern",
+      0,
+      "prefix_*",
+      10,
+      1000,
+    )
+
+  // Should return only the matching fields and their values
+  items |> list.length |> should.equal(6)
+  // 3 matching fields * 2 (field + value)
+
+  cleanup_keys(conn, ["test:hash:scanpattern"])
+}
+
+pub fn hash_empty_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test operations on non-existent hash
+  let assert Ok(0) = valkyrie.hlen(conn, "test:hash:empty", 1000)
+  let assert Ok([]) = valkyrie.hkeys(conn, "test:hash:empty", 1000)
+  let assert Ok([]) = valkyrie.hvals(conn, "test:hash:empty", 1000)
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.hget(conn, "test:hash:empty", "field1", 1000)
+  let assert Ok(False) =
+    valkyrie.hexists(conn, "test:hash:empty", "field1", 1000)
+  let assert Ok(0) = valkyrie.hdel(conn, "test:hash:empty", ["field1"], 1000)
+
+  // hscan on empty hash
+  let assert Ok(#(items, cursor)) =
+    valkyrie.hscan(conn, "test:hash:empty", 0, 10, 1000)
+  items |> should.equal([])
+  cursor |> should.equal(0)
+}
+
+pub fn hash_lifecycle_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:hash:lifecycle"])
+
+  // Create hash with initial data
+  let initial_values =
+    dict.new()
+    |> dict.insert("name", "Alice")
+    |> dict.insert("age", "30")
+    |> dict.insert("city", "New York")
+
+  let assert Ok(_) =
+    valkyrie.hset(conn, "test:hash:lifecycle", initial_values, 1000)
+
+  // Verify initial state
+  let assert Ok(3) = valkyrie.hlen(conn, "test:hash:lifecycle", 1000)
+
+  // Update existing field and add new field
+  let update_values =
+    dict.new()
+    |> dict.insert("age", "31")
+    |> dict.insert("country", "USA")
+
+  let assert Ok(_) =
+    valkyrie.hset(conn, "test:hash:lifecycle", update_values, 1000)
+
+  // Verify updated state
+  let assert Ok(4) = valkyrie.hlen(conn, "test:hash:lifecycle", 1000)
+  let assert Ok("31") = valkyrie.hget(conn, "test:hash:lifecycle", "age", 1000)
+  let assert Ok("USA") =
+    valkyrie.hget(conn, "test:hash:lifecycle", "country", 1000)
+
+  // Delete some fields
+  let assert Ok(2) =
+    valkyrie.hdel(conn, "test:hash:lifecycle", ["city", "country"], 1000)
+
+  // Verify final state
+  let assert Ok(2) = valkyrie.hlen(conn, "test:hash:lifecycle", 1000)
+  let assert Ok(True) =
+    valkyrie.hexists(conn, "test:hash:lifecycle", "name", 1000)
+  let assert Ok(True) =
+    valkyrie.hexists(conn, "test:hash:lifecycle", "age", 1000)
+  let assert Ok(False) =
+    valkyrie.hexists(conn, "test:hash:lifecycle", "city", 1000)
+  let assert Ok(False) =
+    valkyrie.hexists(conn, "test:hash:lifecycle", "country", 1000)
+
+  cleanup_keys(conn, ["test:hash:lifecycle"])
 }
 
 // Utility Operations
