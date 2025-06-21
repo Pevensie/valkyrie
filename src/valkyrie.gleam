@@ -10,6 +10,7 @@ import gleam/option
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam/uri
 import mug
@@ -409,6 +410,11 @@ fn expect_integer(value: List(protocol.Value)) -> Result(Int, Error) {
   }
 }
 
+fn expect_integer_boolean(value) {
+  expect_integer(value)
+  |> result.map(fn(n) { n == 1 })
+}
+
 fn expect_float(value: List(protocol.Value)) -> Result(Float, Error) {
   case value {
     [protocol.BulkString(new)] ->
@@ -500,6 +506,28 @@ fn expect_bulk_string_array(
       })
     _ ->
       Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+  }
+}
+
+fn expect_bulk_string_set(
+  value: List(protocol.Value),
+) -> Result(set.Set(String), Error) {
+  case value {
+    [protocol.Set(s)] ->
+      set.fold(over: s, from: Ok(set.new()), with: fn(acc, item) {
+        use values <- result.try(acc)
+        case item {
+          protocol.BulkString(str) -> Ok(set.insert(values, str))
+          _ ->
+            Error(
+              ProtocolError(
+                protocol.error_string(expected: "bulk string", got: [item]),
+              ),
+            )
+        }
+      })
+    _ ->
+      Error(ProtocolError(protocol.error_string(expected: "set", got: value)))
   }
 }
 
@@ -1401,4 +1429,79 @@ pub fn linsert(
   ["LINSERT", key, position, pivot, value]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
+}
+
+// ------------------------- //
+// ----- Set functions ----- //
+// ------------------------- //
+
+pub fn sadd(
+  conn: Connection,
+  key: String,
+  values: List(String),
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["SADD", key, ..values]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn scard(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
+  ["SCARD", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+pub fn sismember(
+  conn: Connection,
+  key: String,
+  value: String,
+  timeout: Int,
+) -> Result(Bool, Error) {
+  ["SISMEMBER", key, value]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer_boolean)
+}
+
+pub fn smembers(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+) -> Result(set.Set(String), Error) {
+  ["SMEMBERS", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_bulk_string_set)
+}
+
+pub fn sscan(
+  conn: Connection,
+  key: String,
+  cursor: Int,
+  count: Int,
+  timeout: Int,
+) -> Result(#(List(String), Int), Error) {
+  ["SSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
+}
+
+pub fn sscan_pattern(
+  conn: Connection,
+  key: String,
+  cursor: Int,
+  pattern: String,
+  count: Int,
+  timeout: Int,
+) -> Result(#(List(String), Int), Error) {
+  [
+    "SSCAN",
+    key,
+    int.to_string(cursor),
+    "MATCH",
+    pattern,
+    "COUNT",
+    int.to_string(count),
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_cursor_and_array)
 }
