@@ -1216,6 +1216,597 @@ pub fn hash_lifecycle_test() {
   cleanup_keys(conn, ["test:hash:lifecycle"])
 }
 
+// Sorted Set Operations Tests
+
+pub fn zadd_zcard_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:basic"])
+
+  // Test zadd with multiple members
+  let members = [
+    #("member1", valkyrie.Double(1.0)),
+    #("member2", valkyrie.Double(2.5)),
+    #("member3", valkyrie.Double(3.0)),
+  ]
+
+  let assert Ok(3) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:basic",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zcard
+  let assert Ok(3) = valkyrie.zcard(conn, "test:zset:basic", 1000)
+
+  cleanup_keys(conn, ["test:zset:basic"])
+}
+
+pub fn zadd_conditions_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:conditions"])
+
+  // Add initial member
+  let assert Ok(1) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:conditions",
+      [#("member1", valkyrie.Double(1.0))],
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test IfNotExistsInSet - should return 0 for existing member
+  let assert Ok(0) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:conditions",
+      [#("member1", valkyrie.Double(2.0))],
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test IfExistsInSet - should succeed for existing member
+  let assert Ok(0) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:conditions",
+      [#("member1", valkyrie.Double(2.0))],
+      valkyrie.IfExistsInSet,
+      False,
+      1000,
+    )
+
+  // Verify score was updated
+  let assert Ok(2.0) =
+    valkyrie.zscore(conn, "test:zset:conditions", "member1", 1000)
+
+  cleanup_keys(conn, ["test:zset:conditions"])
+}
+
+pub fn zscore_zincrby_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:score"])
+
+  // Add member
+  let assert Ok(1) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:score",
+      [#("member1", valkyrie.Double(10.0))],
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zscore
+  let assert Ok(10.0) =
+    valkyrie.zscore(conn, "test:zset:score", "member1", 1000)
+
+  // Test zscore for non-existent member
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.zscore(conn, "test:zset:score", "nonexistent", 1000)
+
+  // Test zincrby
+  let assert Ok(15.5) =
+    valkyrie.zincrby(
+      conn,
+      "test:zset:score",
+      "member1",
+      valkyrie.Double(5.5),
+      1000,
+    )
+
+  // Test negative increment
+  let assert Ok(12.5) =
+    valkyrie.zincrby(
+      conn,
+      "test:zset:score",
+      "member1",
+      valkyrie.Double(-3.0),
+      1000,
+    )
+
+  cleanup_keys(conn, ["test:zset:score"])
+}
+
+pub fn zcount_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:count"])
+
+  // Add members with different scores
+  let members = [
+    #("member1", valkyrie.Double(1.0)),
+    #("member2", valkyrie.Double(2.0)),
+    #("member3", valkyrie.Double(3.0)),
+    #("member4", valkyrie.Double(4.0)),
+    #("member5", valkyrie.Double(5.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:count",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zcount with inclusive range
+  let assert Ok(3) =
+    valkyrie.zcount(
+      conn,
+      "test:zset:count",
+      valkyrie.Double(2.0),
+      valkyrie.Double(4.0),
+      1000,
+    )
+
+  // Test zcount with infinity
+  let assert Ok(5) =
+    valkyrie.zcount(
+      conn,
+      "test:zset:count",
+      valkyrie.NegativeInfinity,
+      valkyrie.Infinity,
+      1000,
+    )
+
+  cleanup_keys(conn, ["test:zset:count"])
+}
+
+pub fn zrem_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:rem"])
+
+  // Add members
+  let members = [
+    #("member1", valkyrie.Double(1.0)),
+    #("member2", valkyrie.Double(2.0)),
+    #("member3", valkyrie.Double(3.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:rem",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zrem
+  let assert Ok(2) =
+    valkyrie.zrem(conn, "test:zset:rem", ["member1", "member2"], 1000)
+
+  // Verify remaining cardinality
+  let assert Ok(1) = valkyrie.zcard(conn, "test:zset:rem", 1000)
+
+  // Test zrem on non-existent member
+  let assert Ok(0) = valkyrie.zrem(conn, "test:zset:rem", ["nonexistent"], 1000)
+
+  cleanup_keys(conn, ["test:zset:rem"])
+}
+
+pub fn zpopmin_zpopmax_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:pop"])
+
+  // Add members
+  let members = [
+    #("lowest", valkyrie.Double(1.0)),
+    #("middle", valkyrie.Double(2.0)),
+    #("highest", valkyrie.Double(3.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:pop",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zpopmin
+  let assert Ok(popped_min) = valkyrie.zpopmin(conn, "test:zset:pop", 1, 1000)
+  let assert [#("lowest", valkyrie.Double(1.0))] = popped_min
+
+  // Test zpopmax
+  let assert Ok(popped_max) = valkyrie.zpopmax(conn, "test:zset:pop", 1, 1000)
+  let assert [#("highest", valkyrie.Double(3.0))] = popped_max
+
+  // Verify remaining member
+  let assert Ok(1) = valkyrie.zcard(conn, "test:zset:pop", 1000)
+
+  cleanup_keys(conn, ["test:zset:pop"])
+}
+
+pub fn zrank_zrevrank_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:rank"])
+
+  // Add members in order
+  let members = [
+    #("first", valkyrie.Double(1.0)),
+    #("second", valkyrie.Double(2.0)),
+    #("third", valkyrie.Double(3.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:rank",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zrank (0-based ranking from lowest score)
+  let assert Ok(#(0, valkyrie.Double(1.0))) =
+    valkyrie.zrank(conn, "test:zset:rank", "first", 1000)
+  let assert Ok(#(1, valkyrie.Double(2.0))) =
+    valkyrie.zrank(conn, "test:zset:rank", "second", 1000)
+  let assert Ok(#(2, valkyrie.Double(3.0))) =
+    valkyrie.zrank(conn, "test:zset:rank", "third", 1000)
+
+  // Test zrevrank (0-based ranking from highest score)
+  let assert Ok(#(2, valkyrie.Double(1.0))) =
+    valkyrie.zrevrank(conn, "test:zset:rank", "first", 1000)
+  let assert Ok(#(1, valkyrie.Double(2.0))) =
+    valkyrie.zrevrank(conn, "test:zset:rank", "second", 1000)
+  let assert Ok(#(0, valkyrie.Double(3.0))) =
+    valkyrie.zrevrank(conn, "test:zset:rank", "third", 1000)
+
+  // Test non-existent member
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.zrank(conn, "test:zset:rank", "nonexistent", 1000)
+
+  cleanup_keys(conn, ["test:zset:rank"])
+}
+
+pub fn zrange_byscore_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:range"])
+
+  // Add members
+  let members = [
+    #("member1", valkyrie.Double(1.0)),
+    #("member2", valkyrie.Double(2.5)),
+    #("member3", valkyrie.Double(3.0)),
+    #("member4", valkyrie.Double(4.5)),
+    #("member5", valkyrie.Double(5.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:range",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Verify all members were added
+  let assert Ok(5) = valkyrie.zcard(conn, "test:zset:range", 1000)
+
+  // Test zrange_byscore with inclusive bounds
+  let assert Ok(result) =
+    valkyrie.zrange_byscore(
+      conn,
+      "test:zset:range",
+      valkyrie.NumericInclusive(valkyrie.Double(2.0)),
+      valkyrie.NumericInclusive(valkyrie.Double(4.0)),
+      False,
+      1000,
+    )
+
+  result |> list.length |> should.equal(2)
+  // Should include member2 (2.5) and member3 (3.0)
+
+  // Test with reverse order
+  let assert Ok(result_rev) =
+    valkyrie.zrange_byscore(
+      conn,
+      "test:zset:range",
+      valkyrie.NumericInclusive(valkyrie.Double(4.0)),
+      valkyrie.NumericInclusive(valkyrie.Double(2.0)),
+      True,
+      1000,
+    )
+
+  result_rev |> list.length |> should.equal(2)
+
+  cleanup_keys(conn, ["test:zset:range"])
+}
+
+pub fn zrange_bylex_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:lex"])
+
+  // Add members with same score for lexicographical ordering
+  let members = [
+    #("apple", valkyrie.Double(0.0)),
+    #("banana", valkyrie.Double(0.0)),
+    #("cherry", valkyrie.Double(0.0)),
+    #("date", valkyrie.Double(0.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:lex",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zrange_bylex
+  let assert Ok(result) =
+    valkyrie.zrange_bylex(
+      conn,
+      "test:zset:lex",
+      valkyrie.LexInclusive("a"),
+      valkyrie.LexExclusive("date"),
+      False,
+      1000,
+    )
+
+  result |> list.length |> should.equal(3)
+  // Should return first 3 members as strings in lexicographical order
+
+  cleanup_keys(conn, ["test:zset:lex"])
+}
+
+pub fn zscan_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:scan"])
+
+  // Add members
+  let members = [
+    #("member1", valkyrie.Double(1.0)),
+    #("member2", valkyrie.Double(2.0)),
+    #("member3", valkyrie.Double(3.0)),
+    #("member4", valkyrie.Double(4.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:scan",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zscan
+  let assert Ok(#(scan_result, _cursor)) =
+    valkyrie.zscan(conn, "test:zset:scan", 0, 10, 1000)
+
+  scan_result |> list.length |> should.equal(4)
+
+  cleanup_keys(conn, ["test:zset:scan"])
+}
+
+pub fn zscan_pattern_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:scanpattern"])
+
+  // Add members with different patterns
+  let members = [
+    #("prefix_member1", valkyrie.Double(1.0)),
+    #("prefix_member2", valkyrie.Double(2.0)),
+    #("other_member", valkyrie.Double(3.0)),
+    #("prefix_member3", valkyrie.Double(4.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:scanpattern",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zscan_pattern
+  let assert Ok(#(scan_result, _cursor)) =
+    valkyrie.zscan_pattern(
+      conn,
+      "test:zset:scanpattern",
+      0,
+      "prefix_*",
+      10,
+      1000,
+    )
+
+  scan_result |> list.length |> should.equal(3)
+  // Should return only the 3 members matching the pattern
+
+  cleanup_keys(conn, ["test:zset:scanpattern"])
+}
+
+pub fn zrandmember_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:random"])
+
+  // Add members
+  let members = [
+    #("member1", valkyrie.Double(1.0)),
+    #("member2", valkyrie.Double(2.0)),
+    #("member3", valkyrie.Double(3.0)),
+    #("member4", valkyrie.Double(4.0)),
+    #("member5", valkyrie.Double(5.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:random",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zrandmember with count
+  let assert Ok(random_members) =
+    valkyrie.zrandmember(conn, "test:zset:random", 3, 1000)
+
+  random_members |> list.length |> should.equal(3)
+
+  cleanup_keys(conn, ["test:zset:random"])
+}
+
+pub fn sorted_set_empty_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test operations on non-existent sorted set
+  let assert Ok(0) = valkyrie.zcard(conn, "test:zset:empty", 1000)
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.zscore(conn, "test:zset:empty", "member1", 1000)
+  let assert Ok(0) =
+    valkyrie.zcount(
+      conn,
+      "test:zset:empty",
+      valkyrie.NegativeInfinity,
+      valkyrie.Infinity,
+      1000,
+    )
+  let assert Ok(0) = valkyrie.zrem(conn, "test:zset:empty", ["member1"], 1000)
+
+  // zscan on empty sorted set
+  let assert Ok(#(items, cursor)) =
+    valkyrie.zscan(conn, "test:zset:empty", 0, 10, 1000)
+  items |> should.equal([])
+  cursor |> should.equal(0)
+}
+
+pub fn sorted_set_lifecycle_test() {
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
+  cleanup_keys(conn, ["test:zset:lifecycle"])
+
+  // Create sorted set with initial data
+  let initial_members = [
+    #("alice", valkyrie.Double(100.0)),
+    #("bob", valkyrie.Double(200.0)),
+    #("charlie", valkyrie.Double(150.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:lifecycle",
+      initial_members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Verify initial state
+  let assert Ok(3) = valkyrie.zcard(conn, "test:zset:lifecycle", 1000)
+
+  // Update existing member score
+  let assert Ok(250.0) =
+    valkyrie.zincrby(
+      conn,
+      "test:zset:lifecycle",
+      "bob",
+      valkyrie.Double(50.0),
+      1000,
+    )
+
+  // Add new member
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:lifecycle",
+      [#("diana", valkyrie.Double(175.0))],
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Verify updated state
+  let assert Ok(4) = valkyrie.zcard(conn, "test:zset:lifecycle", 1000)
+  let assert Ok(250.0) =
+    valkyrie.zscore(conn, "test:zset:lifecycle", "bob", 1000)
+
+  // Remove some members
+  let assert Ok(2) =
+    valkyrie.zrem(conn, "test:zset:lifecycle", ["alice", "charlie"], 1000)
+
+  // Verify final state
+  let assert Ok(2) = valkyrie.zcard(conn, "test:zset:lifecycle", 1000)
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.zscore(conn, "test:zset:lifecycle", "alice", 1000)
+  let assert Ok(250.0) =
+    valkyrie.zscore(conn, "test:zset:lifecycle", "bob", 1000)
+  let assert Ok(175.0) =
+    valkyrie.zscore(conn, "test:zset:lifecycle", "diana", 1000)
+
+  cleanup_keys(conn, ["test:zset:lifecycle"])
+}
+
 // Utility Operations
 pub fn ping_test() {
   use conn <- get_test_conn()
