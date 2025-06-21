@@ -16,7 +16,7 @@ import gleam/string
 import gleam/uri
 import mug
 
-import valkyrie/internal/protocol
+import valkyrie/resp
 
 const protocol_version = 3
 
@@ -44,7 +44,7 @@ pub type PoolError {
 pub type Error {
   NotFound
   Conflict
-  ProtocolError(String)
+  RespError(String)
   ConnectionError
   Timeout
   TcpError(mug.Error)
@@ -289,7 +289,7 @@ fn execute(conn: Connection, command: List(String), timeout: Int) {
           Ok(value) -> bath.keep() |> bath.returning(Ok(value))
           Error(error) ->
             case error {
-              ConnectionError | ProtocolError(_) | TcpError(_) -> {
+              ConnectionError | RespError(_) | TcpError(_) -> {
                 bath.discard()
                 |> bath.returning(Error(error))
               }
@@ -316,13 +316,13 @@ fn execute(conn: Connection, command: List(String), timeout: Int) {
 
 fn do_execute(socket: mug.Socket, command: List(String), timeout: Int) {
   use _ <- result.try(
-    mug.send(socket, protocol.encode_command(command))
+    mug.send(socket, resp.encode_command(command))
     |> result.map_error(TcpError),
   )
 
   use reply <- result.try(socket_receive(socket, <<>>, now(), timeout))
   case reply {
-    [protocol.SimpleError(error)] | [protocol.BulkError(error)] ->
+    [resp.SimpleError(error)] | [resp.BulkError(error)] ->
       Error(ServerError(error))
     value -> Ok(value)
   }
@@ -333,8 +333,8 @@ fn socket_receive(
   storage: BitArray,
   start_time: Int,
   timeout: Int,
-) -> Result(List(protocol.Value), Error) {
-  case protocol.decode_value(storage) {
+) -> Result(List(resp.Value), Error) {
+  case resp.decode_value(storage) {
     Ok(value) -> Ok(value)
     Error(_) -> {
       case now() - start_time >= timeout * 1_000_000 {
@@ -367,27 +367,23 @@ fn expect_cursor(cursor_string: String) -> Result(Int, Error) {
   case int.parse(cursor_string) {
     Ok(value) -> Ok(value)
     Error(_) ->
-      Error(ProtocolError("Expected integer cursor, got " <> cursor_string))
+      Error(RespError("Expected integer cursor, got " <> cursor_string))
   }
 }
 
 fn expect_cursor_and_array(
-  values: List(protocol.Value),
+  values: List(resp.Value),
 ) -> Result(#(List(String), Int), Error) {
   case values {
-    [
-      protocol.Array([protocol.BulkString(new_cursor_str), protocol.Array(keys)]),
-    ] -> {
+    [resp.Array([resp.BulkString(new_cursor_str), resp.Array(keys)])] -> {
       use new_cursor <- result.try(expect_cursor(new_cursor_str))
       use array <- result.try(
         list.try_map(keys, fn(item) {
           case item {
-            protocol.BulkString(value) -> Ok(value)
+            resp.BulkString(value) -> Ok(value)
             _ ->
               Error(
-                ProtocolError(
-                  protocol.error_string(expected: "string", got: [item]),
-                ),
+                RespError(resp.error_string(expected: "string", got: [item])),
               )
           }
         }),
@@ -396,38 +392,30 @@ fn expect_cursor_and_array(
     }
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
-          expected: "cursor and array",
-          got: values,
-        )),
+        RespError(resp.error_string(expected: "cursor and array", got: values)),
       )
   }
 }
 
 fn expect_cursor_and_sorted_set_member_array(
-  values: List(protocol.Value),
+  values: List(resp.Value),
 ) -> Result(#(List(#(String, Score)), Int), Error) {
   case values {
-    [
-      protocol.Array([
-        protocol.BulkString(new_cursor_str),
-        protocol.Array(members),
-      ]),
-    ] -> {
+    [resp.Array([resp.BulkString(new_cursor_str), resp.Array(members)])] -> {
       use new_cursor <- result.try(expect_cursor(new_cursor_str))
       use array <- result.try(
         members
         |> list.sized_chunk(2)
         |> list.try_map(fn(item) {
           case item {
-            [protocol.BulkString(member), protocol.BulkString(score)] ->
+            [resp.BulkString(member), resp.BulkString(score)] ->
               case score_from_string(score) {
                 Ok(score) -> Ok(#(member, score))
-                _ -> Error(ProtocolError("Invalid score: " <> score))
+                _ -> Error(RespError("Invalid score: " <> score))
               }
             _ ->
               Error(
-                ProtocolError(protocol.error_string(
+                RespError(resp.error_string(
                   expected: "member and score",
                   got: item,
                 )),
@@ -439,32 +427,23 @@ fn expect_cursor_and_sorted_set_member_array(
     }
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
-          expected: "cursor and array",
-          got: values,
-        )),
+        RespError(resp.error_string(expected: "cursor and array", got: values)),
       )
   }
 }
 
-fn expect_integer(value: List(protocol.Value)) -> Result(Int, Error) {
+fn expect_integer(value: List(resp.Value)) -> Result(Int, Error) {
   case value {
-    [protocol.Integer(n)] -> Ok(n)
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(expected: "integer", got: value)),
-      )
+    [resp.Integer(n)] -> Ok(n)
+    _ -> Error(RespError(resp.error_string(expected: "integer", got: value)))
   }
 }
 
-fn expect_nullable_integer(value: List(protocol.Value)) -> Result(Int, Error) {
+fn expect_nullable_integer(value: List(resp.Value)) -> Result(Int, Error) {
   case value {
-    [protocol.Integer(n)] -> Ok(n)
-    [protocol.Null] -> Error(NotFound)
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(expected: "integer", got: value)),
-      )
+    [resp.Integer(n)] -> Ok(n)
+    [resp.Null] -> Error(NotFound)
+    _ -> Error(RespError(resp.error_string(expected: "integer", got: value)))
   }
 }
 
@@ -473,22 +452,22 @@ fn expect_integer_boolean(value) {
   |> result.map(fn(n) { n == 1 })
 }
 
-fn expect_float(value: List(protocol.Value)) -> Result(Float, Error) {
+fn expect_float(value: List(resp.Value)) -> Result(Float, Error) {
   case value {
-    [protocol.BulkString(new)] ->
+    [resp.BulkString(new)] ->
       case float.parse(new) {
         Ok(f) -> Ok(f)
         Error(_) ->
           // Try parsing as int first (Redis sometimes returns "4" instead of "4.0")
           case int.parse(new) {
             Ok(i) -> Ok(int.to_float(i))
-            Error(_) -> Error(ProtocolError("Invalid float: " <> new))
+            Error(_) -> Error(RespError("Invalid float: " <> new))
           }
       }
-    [protocol.Double(value)] -> Ok(value)
+    [resp.Double(value)] -> Ok(value)
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
+        RespError(resp.error_string(
           expected: "bulk string representation of a float, or double",
           got: value,
         )),
@@ -496,23 +475,23 @@ fn expect_float(value: List(protocol.Value)) -> Result(Float, Error) {
   }
 }
 
-fn expect_nullable_float(value: List(protocol.Value)) -> Result(Float, Error) {
+fn expect_nullable_float(value: List(resp.Value)) -> Result(Float, Error) {
   case value {
-    [protocol.BulkString(new)] ->
+    [resp.BulkString(new)] ->
       case float.parse(new) {
         Ok(f) -> Ok(f)
         Error(_) ->
           // Try parsing as int first (Redis sometimes returns "4" instead of "4.0")
           case int.parse(new) {
             Ok(i) -> Ok(int.to_float(i))
-            Error(_) -> Error(ProtocolError("Invalid float: " <> new))
+            Error(_) -> Error(RespError("Invalid float: " <> new))
           }
       }
-    [protocol.Double(double)] -> Ok(double)
-    [protocol.Null] -> Error(NotFound)
+    [resp.Double(double)] -> Ok(double)
+    [resp.Null] -> Error(NotFound)
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
+        RespError(resp.error_string(
           expected: "bulk string representation of a float, double, or null",
           got: value,
         )),
@@ -520,160 +499,130 @@ fn expect_nullable_float(value: List(protocol.Value)) -> Result(Float, Error) {
   }
 }
 
-fn expect_any_string(value: List(protocol.Value)) -> Result(String, Error) {
+fn expect_any_string(value: List(resp.Value)) -> Result(String, Error) {
   case value {
-    [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
+    [resp.SimpleString(str)] | [resp.BulkString(str)] -> Ok(str)
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
-          expected: "string or null",
-          got: value,
-        )),
+        RespError(resp.error_string(expected: "string or null", got: value)),
       )
   }
 }
 
-fn expect_simple_string(value: List(protocol.Value)) -> Result(String, Error) {
+fn expect_simple_string(value: List(resp.Value)) -> Result(String, Error) {
   case value {
-    [protocol.SimpleString(str)] -> Ok(str)
+    [resp.SimpleString(str)] -> Ok(str)
+    _ ->
+      Error(RespError(resp.error_string(expected: "simple string", got: value)))
+  }
+}
+
+fn expect_nullable_bulk_string(value: List(resp.Value)) -> Result(String, Error) {
+  case value {
+    [resp.BulkString(str)] -> Ok(str)
+    [resp.Null] -> Error(NotFound)
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
-          expected: "simple string",
-          got: value,
-        )),
+        RespError(resp.error_string(expected: "bulk string or null", got: value)),
       )
   }
 }
 
-fn expect_nullable_bulk_string(
-  value: List(protocol.Value),
-) -> Result(String, Error) {
+fn expect_any_nullable_string(value: List(resp.Value)) -> Result(String, Error) {
   case value {
-    [protocol.BulkString(str)] -> Ok(str)
-    [protocol.Null] -> Error(NotFound)
+    [resp.SimpleString(str)] | [resp.BulkString(str)] -> Ok(str)
+    [resp.Null] -> Error(NotFound)
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
-          expected: "bulk string or null",
-          got: value,
-        )),
-      )
-  }
-}
-
-fn expect_any_nullable_string(
-  value: List(protocol.Value),
-) -> Result(String, Error) {
-  case value {
-    [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
-    [protocol.Null] -> Error(NotFound)
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(
-          expected: "string or null",
-          got: value,
-        )),
+        RespError(resp.error_string(expected: "string or null", got: value)),
       )
   }
 }
 
 fn expect_bulk_string_array(
-  value: List(protocol.Value),
+  value: List(resp.Value),
 ) -> Result(List(String), Error) {
   case value {
-    [protocol.Array(array)] ->
+    [resp.Array(array)] ->
       list.try_map(array, fn(item) {
         case item {
-          protocol.BulkString(str) -> Ok(str)
+          resp.BulkString(str) -> Ok(str)
           _ ->
             Error(
-              ProtocolError(
-                protocol.error_string(expected: "bulk string", got: [item]),
-              ),
+              RespError(resp.error_string(expected: "bulk string", got: [item])),
             )
         }
       })
-    _ ->
-      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+    _ -> Error(RespError(resp.error_string(expected: "array", got: value)))
   }
 }
 
 fn expect_nullable_bulk_string_array(
-  value: List(protocol.Value),
+  value: List(resp.Value),
 ) -> Result(List(Result(String, Error)), Error) {
   case value {
-    [protocol.Array(array)] ->
+    [resp.Array(array)] ->
       list.map(array, fn(item) {
         case item {
-          protocol.BulkString(str) -> Ok(str)
-          protocol.Null -> Error(NotFound)
+          resp.BulkString(str) -> Ok(str)
+          resp.Null -> Error(NotFound)
           _ ->
             Error(
-              ProtocolError(
-                protocol.error_string(expected: "string or null", got: [item]),
+              RespError(
+                resp.error_string(expected: "string or null", got: [item]),
               ),
             )
         }
       })
       |> Ok
-    _ ->
-      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+    _ -> Error(RespError(resp.error_string(expected: "array", got: value)))
   }
 }
 
 fn expect_bulk_string_set(
-  value: List(protocol.Value),
+  value: List(resp.Value),
 ) -> Result(set.Set(String), Error) {
   case value {
-    [protocol.Set(s)] ->
+    [resp.Set(s)] ->
       set.fold(over: s, from: Ok(set.new()), with: fn(acc, item) {
         use values <- result.try(acc)
         case item {
-          protocol.BulkString(str) -> Ok(set.insert(values, str))
+          resp.BulkString(str) -> Ok(set.insert(values, str))
           _ ->
             Error(
-              ProtocolError(
-                protocol.error_string(expected: "bulk string", got: [item]),
-              ),
+              RespError(resp.error_string(expected: "bulk string", got: [item])),
             )
         }
       })
-    _ ->
-      Error(ProtocolError(protocol.error_string(expected: "set", got: value)))
+    _ -> Error(RespError(resp.error_string(expected: "set", got: value)))
   }
 }
 
 fn expect_score(value) {
   case value {
-    protocol.Double(value) -> Ok(Double(value))
-    protocol.Infinity -> Ok(Infinity)
-    protocol.NegativeInfinity -> Ok(NegativeInfinity)
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(expected: "score", got: [value])),
-      )
+    resp.Double(value) -> Ok(Double(value))
+    resp.Infinity -> Ok(Infinity)
+    resp.NegativeInfinity -> Ok(NegativeInfinity)
+    _ -> Error(RespError(resp.error_string(expected: "score", got: [value])))
   }
 }
 
 fn expect_sorted_set_member_array(
-  value: List(protocol.Value),
+  value: List(resp.Value),
 ) -> Result(List(#(String, Score)), Error) {
   case value {
-    [protocol.Array(members)] -> {
+    [resp.Array(members)] -> {
       use array <- result.then(
         members
         |> list.try_map(fn(item) {
           case item {
-            protocol.Array([protocol.BulkString(member), score]) ->
+            resp.Array([resp.BulkString(member), score]) ->
               expect_score(score)
               |> result.map(fn(score) { #(member, score) })
             _ ->
               Error(
-                ProtocolError(
-                  protocol.error_string(expected: "member and score", got: [
-                    item,
-                  ]),
+                RespError(
+                  resp.error_string(expected: "member and score", got: [item]),
                 ),
               )
           }
@@ -681,26 +630,24 @@ fn expect_sorted_set_member_array(
       )
       Ok(array)
     }
-    _ ->
-      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+    _ -> Error(RespError(resp.error_string(expected: "array", got: value)))
   }
 }
 
 fn expect_nullable_rank_and_score(value) {
   case value {
-    [protocol.Array([protocol.Integer(rank), score])] ->
+    [resp.Array([resp.Integer(rank), score])] ->
       score
       |> expect_score
       |> result.map(fn(score) { #(rank, score) })
-    [protocol.Null] -> Error(NotFound)
-    _ ->
-      Error(ProtocolError(protocol.error_string(expected: "array", got: value)))
+    [resp.Null] -> Error(NotFound)
+    _ -> Error(RespError(resp.error_string(expected: "array", got: value)))
   }
 }
 
 fn expect_key_type(value) {
   case value {
-    [protocol.SimpleString(str)] ->
+    [resp.SimpleString(str)] ->
       case str {
         "set" -> Ok(Set)
         "list" -> Ok(List)
@@ -709,25 +656,19 @@ fn expect_key_type(value) {
         "string" -> Ok(String)
         "stream" -> Ok(Stream)
         "none" -> Error(NotFound)
-        _ -> Error(ProtocolError("Invalid key type: " <> str))
+        _ -> Error(RespError("Invalid key type: " <> str))
       }
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(expected: "key type", got: value)),
-      )
+    _ -> Error(RespError(resp.error_string(expected: "key type", got: value)))
   }
 }
 
 fn expect_map(value) {
   case value {
-    [protocol.Map(map)] -> Ok(map)
-    [protocol.Array([])] -> Error(NotFound)
+    [resp.Map(map)] -> Ok(map)
+    [resp.Array([])] -> Error(NotFound)
     _ ->
       Error(
-        ProtocolError(protocol.error_string(
-          expected: "map or empty array",
-          got: value,
-        )),
+        RespError(resp.error_string(expected: "map or empty array", got: value)),
       )
   }
 }
@@ -752,7 +693,7 @@ pub fn custom(
   conn: Connection,
   parts: List(String),
   timeout: Int,
-) -> Result(List(protocol.Value), Error) {
+) -> Result(List(resp.Value), Error) {
   execute(conn, parts, timeout)
 }
 
@@ -797,25 +738,16 @@ pub fn keys(
   )
 
   case value {
-    [protocol.Array(array)] ->
+    [resp.Array(array)] ->
       list.try_map(array, fn(item) {
         case item {
-          protocol.BulkString(value) -> Ok(value)
+          resp.BulkString(value) -> Ok(value)
           _ ->
-            Error(
-              ProtocolError(
-                protocol.error_string(expected: "string", got: [item]),
-              ),
-            )
+            Error(RespError(resp.error_string(expected: "string", got: [item])))
         }
       })
     _ ->
-      Error(
-        ProtocolError(protocol.error_string(
-          expected: "string array",
-          got: value,
-        )),
-      )
+      Error(RespError(resp.error_string(expected: "string array", got: value)))
   }
 }
 
@@ -1113,11 +1045,8 @@ pub fn del(
   )
 
   case value {
-    [protocol.Integer(n)] -> Ok(n)
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(expected: "integer", got: value)),
-      )
+    [resp.Integer(n)] -> Ok(n)
+    _ -> Error(RespError(resp.error_string(expected: "integer", got: value)))
   }
 }
 
@@ -1281,11 +1210,8 @@ pub fn ping(conn: Connection, timeout: Int) -> Result(String, Error) {
   |> execute(conn, _, timeout)
   |> result.try(fn(value) {
     case value {
-      [protocol.SimpleString("PONG")] -> Ok("PONG")
-      _ ->
-        Error(
-          ProtocolError(protocol.error_string(expected: "PONG", got: value)),
-        )
+      [resp.SimpleString("PONG")] -> Ok("PONG")
+      _ -> Error(RespError(resp.error_string(expected: "PONG", got: value)))
     }
   })
 }
@@ -1304,11 +1230,8 @@ pub fn ping_message(
   |> execute(conn, _, timeout)
   |> result.try(fn(value) {
     case value {
-      [protocol.BulkString(msg)] if msg == message -> Ok(msg)
-      _ ->
-        Error(
-          ProtocolError(protocol.error_string(expected: message, got: value)),
-        )
+      [resp.BulkString(msg)] if msg == message -> Ok(msg)
+      _ -> Error(RespError(resp.error_string(expected: message, got: value)))
     }
   })
 }
@@ -1464,15 +1387,12 @@ pub fn lpop(
   |> result.try(fn(value) {
     case value {
       // When count is provided, Redis returns an array
-      [protocol.Array([protocol.BulkString(str)])] -> Ok(str)
-      [protocol.Array([])] -> Error(NotFound)
-      [protocol.Null] -> Error(NotFound)
+      [resp.Array([resp.BulkString(str)])] -> Ok(str)
+      [resp.Array([])] -> Error(NotFound)
+      [resp.Null] -> Error(NotFound)
       _ ->
         Error(
-          ProtocolError(protocol.error_string(
-            expected: "string or array",
-            got: value,
-          )),
+          RespError(resp.error_string(expected: "string or array", got: value)),
         )
     }
   })
@@ -1495,15 +1415,12 @@ pub fn rpop(
   |> result.try(fn(value) {
     case value {
       // When count is provided, Redis returns an array
-      [protocol.Array([protocol.BulkString(str)])] -> Ok(str)
-      [protocol.Array([])] -> Error(NotFound)
-      [protocol.Null] -> Error(NotFound)
+      [resp.Array([resp.BulkString(str)])] -> Ok(str)
+      [resp.Array([])] -> Error(NotFound)
+      [resp.Null] -> Error(NotFound)
       _ ->
         Error(
-          ProtocolError(protocol.error_string(
-            expected: "string or array",
-            got: value,
-          )),
+          RespError(resp.error_string(expected: "string or array", got: value)),
         )
     }
   })
@@ -2088,7 +2005,7 @@ pub fn hgetall(
   key: String,
   timeout: Int,
   // TODO: expose protocol, probably
-) -> Result(dict.Dict(protocol.Value, protocol.Value), Error) {
+) -> Result(dict.Dict(resp.Value, resp.Value), Error) {
   ["HGETALL", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_map)

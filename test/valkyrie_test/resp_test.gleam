@@ -1,6 +1,6 @@
 import gleam/bit_array
 import gleeunit/should
-import valkyrie/internal/protocol
+import valkyrie/resp
 
 /// This was a specific failure case for Radish mentioned in this issue:
 /// https://github.com/massivefermion/radish/issues/12
@@ -111,6 +111,6 @@ pub fn can_decode_redis_8_hello_3_test() {
   // *0
   "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$5\r\n8.0.2\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:13\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*5\r\n%4\r\n$4\r\nname\r\n$6\r\nsearch\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$43\r\n/usr/local/lib/redis/modules//redisearch.so\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$2\r\nbf\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$43\r\n/usr/local/lib/redis/modules//redisbloom.so\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$10\r\ntimeseries\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$48\r\n/usr/local/lib/redis/modules//redistimeseries.so\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$9\r\nvectorset\r\n$3\r\nver\r\n:1\r\n$4\r\npath\r\n$0\r\n\r\n$4\r\nargs\r\n*0\r\n%4\r\n$4\r\nname\r\n$6\r\nReJSON\r\n$3\r\nver\r\n:80001\r\n$4\r\npath\r\n$39\r\n/usr/local/lib/redis/modules//rejson.so\r\n$4\r\nargs\r\n*0"
   |> bit_array.from_string
-  |> protocol.decode_value
+  |> resp.decode_value
   |> should.be_ok
 }
