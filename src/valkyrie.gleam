@@ -11,6 +11,7 @@ import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import gleam/uri
 import mug
 
 import valkyrie/internal/protocol
@@ -70,6 +71,92 @@ pub fn port(config: Config, port: Int) -> Config {
 
 pub fn auth(config: Config, auth: Auth) -> Config {
   Config(..config, auth:)
+}
+
+pub type UrlParseError {
+  InvalidUriFormat
+  UnsupportedScheme
+  MissingScheme
+  MissingHost
+}
+
+/// Parse a Redis-compatible URI into a Config object.
+///
+/// Supports the following protocols:
+/// - `redis://`
+/// - `valkey://`
+/// - `keydb://`
+///
+/// URI format: `protocol://[username:password@]host[:port][/database]`
+///
+/// The database path in the URI is ignored but won't cause an error.
+/// If no port is specified, defaults to 6379.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Basic usage
+/// let assert Ok(config) = url_config("redis://localhost:6379")
+/// // Config(host: "localhost", port: 6379, auth: NoAuth)
+///
+/// // With authentication
+/// let assert Ok(config) = url_config("redis://user:pass@localhost:6379")
+/// // Config(host: "localhost", port: 6379, auth: UsernameAndPassword("user", "pass"))
+///
+/// // Password-only authentication
+/// let assert Ok(config) = url_config("redis://:mypassword@localhost:6379")
+/// // Config(host: "localhost", port: 6379, auth: PasswordOnly("mypassword"))
+///
+/// // Different protocols
+/// let assert Ok(config) = url_config("valkey://192.168.1.100:6380")
+/// // Config(host: "192.168.1.100", port: 6380, auth: NoAuth)
+///
+/// // Error handling
+/// let assert Error(UnsupportedScheme) = url_config("http://localhost")
+/// let assert Error(MissingHost) = url_config("redis:")
+/// ```
+pub fn url_config(url: String) -> Result(Config, UrlParseError) {
+  use parsed_uri <- result.try(
+    uri.parse(url)
+    |> result.replace_error(InvalidUriFormat),
+  )
+
+  // Validate scheme
+  use _ <- result.try(case parsed_uri.scheme {
+    option.Some("redis") | option.Some("valkey") | option.Some("keydb") ->
+      Ok(parsed_uri.scheme)
+    option.Some(_) -> Error(UnsupportedScheme)
+    option.None -> Error(MissingScheme)
+  })
+
+  // Extract host
+  use host <- result.try(case parsed_uri.host {
+    option.Some("") | option.None -> Error(MissingHost)
+    option.Some(h) -> Ok(h)
+  })
+
+  // Extract port (default to 6379 if not specified)
+  let port = case parsed_uri.port {
+    option.Some(p) -> p
+    option.None -> 6379
+  }
+
+  // Extract authentication from userinfo
+  let auth = case parsed_uri.userinfo {
+    option.Some(userinfo) -> {
+      case string.split(userinfo, ":") {
+        ["", password] -> PasswordOnly(password)
+        [username, password] -> UsernameAndPassword(username, password)
+        [password] -> PasswordOnly(password)
+        [] -> NoAuth
+        _ -> NoAuth
+        // fallback for malformed userinfo
+      }
+    }
+    option.None -> NoAuth
+  }
+
+  Ok(Config(host: host, port: port, auth: auth))
 }
 
 // ------------------------------- //
