@@ -1749,19 +1749,6 @@ pub fn unicode_test() {
   retrieved |> should.equal(unicode_value)
 }
 
-pub fn large_value_test() {
-  use conn <- get_test_conn()
-
-  // Create a large string (100KB instead of 1MB to avoid timeout)
-  let large_value = string.repeat("x", 100 * 1024)
-
-  let assert Ok("OK") =
-    conn |> valkyrie.set("test:large", large_value, option.None, 5000)
-
-  let assert Ok(retrieved) = conn |> valkyrie.get("test:large", 5000)
-  retrieved |> string.length |> should.equal(100 * 1024)
-}
-
 pub fn rapid_operations_test() {
   use conn <- get_test_conn()
 
@@ -1865,4 +1852,205 @@ pub fn concurrent_operations_test() {
       get_result |> should.equal(Ok(expected_value))
     })
   })
+}
+
+// Edge Case and Boundary Tests
+
+pub fn binary_data_test() {
+  use conn <- get_test_conn()
+
+  // Test with binary data (null bytes)
+  let binary_value = "hello\u{0000}world\u{0001}\u{0002}"
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:binary", binary_value, option.None, 1000)
+  let assert Ok(retrieved) = valkyrie.get(conn, "test:binary", 1000)
+  retrieved |> should.equal(binary_value)
+}
+
+pub fn empty_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test with empty strings
+  let assert Ok("OK") = valkyrie.set(conn, "test:empty", "", option.None, 1000)
+  let assert Ok("") = valkyrie.get(conn, "test:empty", 1000)
+
+  // Test empty key operations
+  let assert Error(_) = valkyrie.get(conn, "", 1000)
+
+  // Test append to empty string
+  let assert Ok(5) = valkyrie.append(conn, "test:empty", "hello", 1000)
+  let assert Ok("hello") = valkyrie.get(conn, "test:empty", 1000)
+}
+
+pub fn integer_boundary_test() {
+  use conn <- get_test_conn()
+
+  // Test with large numbers close to integer limits
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:bigint", "2147483647", option.None, 1000)
+  let assert Ok(2_147_483_648) = valkyrie.incr(conn, "test:bigint", 1000)
+
+  // Test decrementing to negative values
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:negint", "1", option.None, 1000)
+  let assert Ok(0) = valkyrie.decr(conn, "test:negint", 1000)
+  let assert Ok(-1) = valkyrie.decr(conn, "test:negint", 1000)
+  let assert Ok(-11) = valkyrie.decrby(conn, "test:negint", 10, 1000)
+}
+
+pub fn list_boundary_test() {
+  use conn <- get_test_conn()
+
+  // Create a list with some elements
+  let assert Ok(_) =
+    valkyrie.lpush(conn, "test:list:bounds", ["a", "b", "c"], 1000)
+
+  // Test lindex with various indices
+  let assert Ok("c") = valkyrie.lindex(conn, "test:list:bounds", 0, 1000)
+  let assert Ok("a") = valkyrie.lindex(conn, "test:list:bounds", -1, 1000)
+  let assert Error(_) = valkyrie.lindex(conn, "test:list:bounds", 10, 1000)
+  let assert Error(_) = valkyrie.lindex(conn, "test:list:bounds", -10, 1000)
+
+  // Test lrange with invalid ranges
+  let assert Ok([]) = valkyrie.lrange(conn, "test:list:bounds", 5, 10, 1000)
+  let assert Ok([]) = valkyrie.lrange(conn, "test:list:bounds", 2, 1, 1000)
+}
+
+pub fn hash_edge_cases_test() {
+  use conn <- get_test_conn()
+
+  // Test with very long field names
+  let long_field = string.repeat("x", 1000)
+  let hash_values = dict.new() |> dict.insert(long_field, "value")
+  let assert Ok(_) = valkyrie.hset(conn, "test:hash:edge", hash_values, 1000)
+  let assert Ok("value") =
+    valkyrie.hget(conn, "test:hash:edge", long_field, 1000)
+
+  // Test hincrby with large increments
+  let assert Ok(1_000_000) =
+    valkyrie.hincrby(conn, "test:hash:edge", "bignum", 1_000_000, 1000)
+  let assert Ok(999_999) =
+    valkyrie.hincrby(conn, "test:hash:edge", "bignum", -1, 1000)
+
+  // Test hincrbyfloat with very small numbers
+  let assert Ok(result) =
+    valkyrie.hincrbyfloat(conn, "test:hash:edge", "smallfloat", 0.000001, 1000)
+  result |> should.equal(0.000001)
+}
+
+pub fn sorted_set_edge_cases_test() {
+  use <- bool.guard(when: is_keydb(), return: Ok(0))
+  use conn <- get_test_conn()
+
+  // Test with infinity scores
+  let members = [
+    #("neg_inf", valkyrie.NegativeInfinity),
+    #("zero", valkyrie.Double(0.0)),
+    #("pos_inf", valkyrie.Infinity),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:edge",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zrank with infinity values
+  let assert Ok(#(0, valkyrie.NegativeInfinity)) =
+    valkyrie.zrank_withscore(conn, "test:zset:edge", "neg_inf", 1000)
+  let assert Ok(#(2, valkyrie.Infinity)) =
+    valkyrie.zrank_withscore(conn, "test:zset:edge", "pos_inf", 1000)
+
+  // Test zcount with infinity bounds
+  let assert Ok(3) =
+    valkyrie.zcount(
+      conn,
+      "test:zset:edge",
+      valkyrie.NegativeInfinity,
+      valkyrie.Infinity,
+      1000,
+    )
+}
+
+pub fn key_expiration_edge_cases_test() {
+  use conn <- get_test_conn()
+
+  // Test expire with edge values
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:expire:edge", "value", option.None, 1000)
+
+  // Test with 1 second expiry
+  let assert Ok(1) =
+    valkyrie.expire(conn, "test:expire:edge", 1, option.None, 1000)
+
+  // Test persist
+  let assert Ok(1) = valkyrie.persist(conn, "test:expire:edge", 1000)
+
+  // Test expire on non-existent key
+  let assert Ok(0) =
+    valkyrie.expire(conn, "test:nonexistent", 60, option.None, 1000)
+}
+
+pub fn scan_edge_cases_test() {
+  use conn <- get_test_conn()
+
+  // Create many keys to test scanning
+  let keys =
+    list.range(1, 50) |> list.map(fn(i) { "scan:test:" <> int.to_string(i) })
+  list.each(keys, fn(key) {
+    let assert Ok("OK") = valkyrie.set(conn, key, "value", option.None, 1000)
+  })
+
+  // Test scan with very large count
+  let assert Ok(#(scan_keys, _)) = valkyrie.scan(conn, 0, 1000, 1000)
+  let key_count = list.length(scan_keys)
+  case key_count > 40 {
+    True -> Nil
+    False -> {
+      panic as {
+        "Expected more than 40 keys, got: " <> int.to_string(key_count)
+      }
+    }
+  }
+
+  // Test scan with pattern that matches nothing
+  let assert Ok(#(empty_keys, _)) =
+    valkyrie.scan_pattern(conn, 0, "nomatch:*", 100, 1000)
+  empty_keys |> should.equal([])
+}
+
+pub fn mget_edge_cases_test() {
+  use conn <- get_test_conn()
+
+  // Set up some keys
+  let assert Ok("OK") =
+    valkyrie.set(conn, "mget:1", "value1", option.None, 1000)
+  let assert Ok("OK") =
+    valkyrie.set(conn, "mget:3", "value3", option.None, 1000)
+
+  // Test mget with mix of existing and non-existing keys
+  let assert Ok(results) =
+    valkyrie.mget(conn, ["mget:1", "mget:2", "mget:3"], 1000)
+
+  // Should get [Ok("value1"), Error(NotFound), Ok("value3")]
+  results |> list.length |> should.equal(3)
+  let assert [Ok("value1"), Error(_), Ok("value3")] = results
+}
+
+pub fn large_value_test() {
+  use conn <- get_test_conn()
+
+  // Test with a moderately large value (100KB)
+  let large_value = string.repeat("x", 100_000)
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:large", large_value, option.None, 1000)
+  let assert Ok(retrieved) = valkyrie.get(conn, "test:large", 10_000)
+  retrieved |> should.equal(large_value)
+
+  // Test append to large value
+  let assert Ok(100_005) = valkyrie.append(conn, "test:large", "hello", 1000)
 }
