@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/bool
 import gleam/dict
 import gleam/float
 import gleam/int
@@ -269,8 +270,8 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     <<",-inf\r\n":utf8, rest:bits>> -> Ok(#(NegativeInfinity, rest))
 
     <<":":utf8, rest:bits>> -> {
-      use #(value, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use value <- result.then(bit_array.to_string(value))
+      use #(value, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use value <- result.try(bit_array.to_string(value))
 
       value
       |> int.parse
@@ -279,8 +280,8 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<",":utf8, rest:bits>> -> {
-      use #(value, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use value <- result.then(bit_array.to_string(value))
+      use #(value, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use value <- result.try(bit_array.to_string(value))
 
       case int.parse(value) {
         Ok(value) ->
@@ -301,24 +302,24 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<"+":utf8, rest:bits>> -> {
-      use #(value, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use value <- result.then(bit_array.to_string(value))
+      use #(value, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use value <- result.try(bit_array.to_string(value))
 
       #(SimpleString(value), rest)
       |> Ok
     }
 
     <<"-":utf8, rest:bits>> -> {
-      use #(value, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use value <- result.then(bit_array.to_string(value))
+      use #(value, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use value <- result.try(bit_array.to_string(value))
 
       #(SimpleError(value), rest)
       |> Ok
     }
 
     <<"(":utf8, rest:bits>> -> {
-      use #(value, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use value <- result.then(bit_array.to_string(value))
+      use #(value, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use value <- result.try(bit_array.to_string(value))
 
       value
       |> int.parse
@@ -327,14 +328,14 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<"$":utf8, rest:bits>> -> {
-      use #(length, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use length <- result.then(bit_array.to_string(length))
-      use length <- result.then(int.parse(length))
+      use #(length, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use length <- result.try(bit_array.to_string(length))
+      use length <- result.try(int.parse(length))
 
-      use #(value, rest) <- result.then(
+      use #(value, rest) <- result.try(
         consume_by_length(rest, length - 1, <<>>),
       )
-      use value <- result.then(bit_array.to_string(value))
+      use value <- result.try(bit_array.to_string(value))
 
       let assert <<"\r\n":utf8, rest:bits>> = rest
       #(BulkString(value), rest)
@@ -342,14 +343,14 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<"!":utf8, rest:bits>> -> {
-      use #(length, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use length <- result.then(bit_array.to_string(length))
-      use length <- result.then(int.parse(length))
+      use #(length, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use length <- result.try(bit_array.to_string(length))
+      use length <- result.try(int.parse(length))
 
-      use #(value, rest) <- result.then(
+      use #(value, rest) <- result.try(
         consume_by_length(rest, length - 1, <<>>),
       )
-      use value <- result.then(bit_array.to_string(value))
+      use value <- result.try(bit_array.to_string(value))
 
       let assert <<"\r\n":utf8, rest:bits>> = rest
       #(BulkError(value), rest)
@@ -357,11 +358,11 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<"*":utf8, rest:bits>> -> {
-      use #(length, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use length <- result.then(bit_array.to_string(length))
-      use length <- result.then(int.parse(length))
+      use #(length, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use length <- result.try(bit_array.to_string(length))
+      use length <- result.try(int.parse(length))
 
-      use #(value, rest) <- result.then(decode_array(rest, length, []))
+      use #(value, rest) <- result.try(decode_array(rest, length, []))
       #(
         value
           |> Array,
@@ -371,11 +372,11 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<">":utf8, rest:bits>> -> {
-      use #(length, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use length <- result.then(bit_array.to_string(length))
-      use length <- result.then(int.parse(length))
+      use #(length, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use length <- result.try(bit_array.to_string(length))
+      use length <- result.try(int.parse(length))
 
-      use #(value, rest) <- result.then(decode_array(rest, length, []))
+      use #(value, rest) <- result.try(decode_array(rest, length, []))
       #(
         value
           |> Push,
@@ -385,11 +386,11 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<"~":utf8, rest:bits>> -> {
-      use #(length, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use length <- result.then(bit_array.to_string(length))
-      use length <- result.then(int.parse(length))
+      use #(length, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use length <- result.try(bit_array.to_string(length))
+      use length <- result.try(int.parse(length))
 
-      use #(value, rest) <- result.then(decode_array(rest, length, []))
+      use #(value, rest) <- result.try(decode_array(rest, length, []))
       #(
         value
           |> set.from_list
@@ -400,11 +401,11 @@ fn decode_message(value: BitArray) -> Result(#(Value, BitArray), Nil) {
     }
 
     <<"%":utf8, rest:bits>> -> {
-      use #(length, rest) <- result.then(consume_till_crlf(rest, <<>>))
-      use length <- result.then(bit_array.to_string(length))
-      use length <- result.then(int.parse(length))
+      use #(length, rest) <- result.try(consume_till_crlf(rest, <<>>))
+      use length <- result.try(bit_array.to_string(length))
+      use length <- result.try(int.parse(length))
 
-      use #(value, rest) <- result.then(decode_map(rest, length, []))
+      use #(value, rest) <- result.try(decode_map(rest, length, []))
       #(
         value
           |> Map,
@@ -425,6 +426,7 @@ fn consume_till_crlf(
     <<"\r\n":utf8, rest:bits>> -> Ok(#(storage, rest))
     <<ch:8, rest:bits>> ->
       consume_till_crlf(rest, bit_array.append(storage, <<ch>>))
+    <<>> -> Ok(#(storage, <<>>))
     _ -> Error(Nil)
   }
 }
@@ -434,6 +436,8 @@ fn consume_by_length(
   length: Int,
   storage: BitArray,
 ) -> Result(#(BitArray, BitArray), Nil) {
+  use <- bool.guard(when: length < 0, return: Ok(#(storage, data)))
+
   case bit_array.byte_size(data) {
     0 -> Error(Nil)
     _ -> {
@@ -451,7 +455,7 @@ fn decode_array(data: BitArray, length: Int, storage: List(Value)) {
   case list.length(storage) == length {
     True -> Ok(#(storage, data))
     False -> {
-      use #(item, rest) <- result.then(decode_message(data))
+      use #(item, rest) <- result.try(decode_message(data))
       decode_array(rest, length, list.append(storage, [item]))
     }
   }
@@ -461,8 +465,8 @@ fn decode_map(data: BitArray, length: Int, storage: List(#(Value, Value))) {
   case list.length(storage) == length {
     True -> Ok(#(dict.from_list(storage), data))
     False -> {
-      use #(key, rest) <- result.then(decode_message(data))
-      use #(value, rest) <- result.then(decode_message(rest))
+      use #(key, rest) <- result.try(decode_message(data))
+      use #(value, rest) <- result.try(decode_message(rest))
       decode_map(rest, length, list.append(storage, [#(key, value)]))
     }
   }
