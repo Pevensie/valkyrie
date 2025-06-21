@@ -3,6 +3,7 @@ import gleam/int
 import gleam/list
 import gleam/option
 import gleam/otp/static_supervisor
+import gleam/set
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -665,6 +666,163 @@ pub fn linsert_test() {
   items |> should.equal(["a", "b", "c"])
 
   cleanup_keys(conn, ["test:linsert"])
+}
+
+// Set Operations
+pub fn sadd_scard_test() {
+  use conn <- get_test_conn()
+
+  // Test adding members to a set
+  let assert Ok(3) =
+    conn |> valkyrie.sadd("test:set", ["apple", "banana", "cherry"], 1000)
+
+  // Test cardinality
+  let assert Ok(3) = conn |> valkyrie.scard("test:set", 1000)
+
+  // Test adding duplicate and new members
+  let assert Ok(1) = conn |> valkyrie.sadd("test:set", ["apple", "date"], 1000)
+
+  // Cardinality should be 4 now
+  let assert Ok(4) = conn |> valkyrie.scard("test:set", 1000)
+
+  cleanup_keys(conn, ["test:set"])
+}
+
+pub fn sismember_test() {
+  use conn <- get_test_conn()
+
+  // Add some members
+  let assert Ok(_) =
+    conn |> valkyrie.sadd("test:set:members", ["red", "green", "blue"], 1000)
+
+  // Test membership
+  let assert Ok(True) =
+    conn |> valkyrie.sismember("test:set:members", "red", 1000)
+  let assert Ok(True) =
+    conn |> valkyrie.sismember("test:set:members", "green", 1000)
+  let assert Ok(False) =
+    conn |> valkyrie.sismember("test:set:members", "yellow", 1000)
+
+  cleanup_keys(conn, ["test:set:members"])
+}
+
+pub fn smembers_test() {
+  use conn <- get_test_conn()
+
+  // Add some members
+  let assert Ok(_) =
+    conn |> valkyrie.sadd("test:set:all", ["x", "y", "z"], 1000)
+
+  // Get all members
+  let assert Ok(members) = conn |> valkyrie.smembers("test:set:all", 1000)
+
+  // Verify all expected members are present
+  members |> set.contains("x") |> should.be_true
+  members |> set.contains("y") |> should.be_true
+  members |> set.contains("z") |> should.be_true
+  members |> set.size |> should.equal(3)
+
+  cleanup_keys(conn, ["test:set:all"])
+}
+
+pub fn sscan_test() {
+  use conn <- get_test_conn()
+
+  // Add many members
+  let members = list.range(1, 20) |> list.map(int.to_string)
+  let assert Ok(_) = conn |> valkyrie.sadd("test:set:scan", members, 1000)
+
+  // Scan the set
+  let assert Ok(#(scanned_members, cursor)) =
+    conn |> valkyrie.sscan("test:set:scan", 0, 10, 1000)
+
+  // Should return some members
+  scanned_members |> list.length |> should.not_equal(0)
+
+  // Continue scanning if cursor is not 0
+  case cursor {
+    0 -> Nil
+    _ -> {
+      let assert Ok(_) =
+        conn |> valkyrie.sscan("test:set:scan", cursor, 10, 1000)
+      Nil
+    }
+  }
+
+  cleanup_keys(conn, ["test:set:scan"])
+}
+
+pub fn sscan_pattern_test() {
+  use conn <- get_test_conn()
+
+  // Add members with different patterns
+  let assert Ok(_) =
+    conn
+    |> valkyrie.sadd(
+      "test:set:pattern",
+      ["user:1", "user:2", "admin:1", "guest:1"],
+      1000,
+    )
+
+  // Scan for user pattern
+  let assert Ok(#(user_members, _)) =
+    conn |> valkyrie.sscan_pattern("test:set:pattern", 0, "user:*", 10, 1000)
+
+  // Should only return user members
+  user_members
+  |> list.all(fn(member) { string.starts_with(member, "user:") })
+  |> should.be_true
+
+  cleanup_keys(conn, ["test:set:pattern"])
+}
+
+pub fn set_empty_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test operations on empty/non-existent set
+  let assert Ok(0) = conn |> valkyrie.scard("test:set:empty", 1000)
+  let assert Ok(False) =
+    conn |> valkyrie.sismember("test:set:empty", "anything", 1000)
+
+  let assert Ok(empty_set) = conn |> valkyrie.smembers("test:set:empty", 1000)
+  empty_set |> set.size |> should.equal(0)
+
+  // Scan empty set
+  let assert Ok(#([], 0)) =
+    conn |> valkyrie.sscan("test:set:empty", 0, 10, 1000)
+}
+
+pub fn set_lifecycle_test() {
+  use conn <- get_test_conn()
+
+  // Create set with initial members
+  let assert Ok(3) =
+    conn
+    |> valkyrie.sadd("test:set:lifecycle", ["alpha", "beta", "gamma"], 1000)
+
+  // Verify initial state
+  let assert Ok(3) = conn |> valkyrie.scard("test:set:lifecycle", 1000)
+  let assert Ok(True) =
+    conn |> valkyrie.sismember("test:set:lifecycle", "alpha", 1000)
+
+  // Add more members including duplicates
+  let assert Ok(2) =
+    conn
+    |> valkyrie.sadd("test:set:lifecycle", ["alpha", "delta", "epsilon"], 1000)
+
+  // Final cardinality should be 5
+  let assert Ok(5) = conn |> valkyrie.scard("test:set:lifecycle", 1000)
+
+  // Get all members and verify
+  let assert Ok(all_members) =
+    conn |> valkyrie.smembers("test:set:lifecycle", 1000)
+  all_members |> set.size |> should.equal(5)
+
+  let expected_members =
+    set.from_list(["alpha", "beta", "gamma", "delta", "epsilon"])
+  all_members |> should.equal(expected_members)
+
+  cleanup_keys(conn, ["test:set:lifecycle"])
 }
 
 // Utility Operations

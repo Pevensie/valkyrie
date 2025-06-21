@@ -1,0 +1,14 @@
+[tools]
+gleam = "1.11.1"
+
+[tasks.test]
+run = [
+    "docker compose --profile all down",
+    "docker compose --profile redis up -d",
+    "gleam test",
+    "docker compose --profile redis down",
+    "docker compose --profile valkey up -d",
+    "gleam test",
+    # Don't take Valkey down - leave something up for
+    # development use.
+]
