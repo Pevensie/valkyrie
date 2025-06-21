@@ -33,6 +33,11 @@ pub opaque type Connection {
   Pooled(bath.Pool(mug.Socket))
 }
 
+pub type PoolError {
+  PooledResourceCreateError(String)
+  NoResourcesAvailable
+}
+
 pub type Error {
   NotFound
   ProtocolError(String)
@@ -40,7 +45,7 @@ pub type Error {
   Timeout
   TcpError(mug.Error)
   ServerError(String)
-  PoolError(bath.ApplyError)
+  PoolError(PoolError)
 }
 
 fn auth_to_options_list(auth: Auth) -> List(String) {
@@ -71,7 +76,7 @@ pub fn auth(config: Config, auth: Auth) -> Config {
 // ----- Lifecycle functions ----- //
 // ------------------------------- //
 
-fn create_socket(config: Config, timeout: Int) {
+fn create_socket(config: Config, timeout: Int) -> Result(mug.Socket, Error) {
   use socket <- result.try(
     mug.connect(mug.ConnectionOptions(config.host, config.port, timeout))
     |> result.map_error(TcpError),
@@ -175,11 +180,18 @@ fn execute(conn: Connection, command: List(String), timeout: Int) {
                 bath.keep()
                 |> bath.returning(Error(error))
               }
-              PoolError(_) -> panic as "unreachable"
+              PoolError(_) -> panic as "unreachable - no pool here"
             }
         }
       })
-      |> result.map_error(PoolError)
+      |> result.map_error(fn(bath_error) {
+        case bath_error {
+          bath.CheckOutResourceCreateError(error:) ->
+            PooledResourceCreateError(error)
+          bath.NoResourcesAvailable -> NoResourcesAvailable
+        }
+        |> PoolError
+      })
       |> result.flatten
     }
   }
