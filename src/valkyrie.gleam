@@ -496,6 +496,30 @@ fn expect_float(value: List(protocol.Value)) -> Result(Float, Error) {
   }
 }
 
+fn expect_nullable_float(value: List(protocol.Value)) -> Result(Float, Error) {
+  case value {
+    [protocol.BulkString(new)] ->
+      case float.parse(new) {
+        Ok(f) -> Ok(f)
+        Error(_) ->
+          // Try parsing as int first (Redis sometimes returns "4" instead of "4.0")
+          case int.parse(new) {
+            Ok(i) -> Ok(int.to_float(i))
+            Error(_) -> Error(ProtocolError("Invalid float: " <> new))
+          }
+      }
+    [protocol.Double(double)] -> Ok(double)
+    [protocol.Null] -> Error(NotFound)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "bulk string representation of a float, double, or null",
+          got: value,
+        )),
+      )
+  }
+}
+
 fn expect_any_string(value: List(protocol.Value)) -> Result(String, Error) {
   case value {
     [protocol.SimpleString(str)] | [protocol.BulkString(str)] -> Ok(str)
@@ -1770,7 +1794,7 @@ pub fn zscore(
 ) -> Result(Float, Error) {
   ["ZSCORE", key, member]
   |> execute(conn, _, timeout)
-  |> result.try(expect_float)
+  |> result.try(expect_nullable_float)
 }
 
 pub fn zscan(
@@ -1834,7 +1858,7 @@ pub fn zpopmin(
   count: Int,
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
-  ["ZPOPMIN", key, int.to_string(count), "WITHSCORES"]
+  ["ZPOPMIN", key, int.to_string(count)]
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
@@ -1845,30 +1869,60 @@ pub fn zpopmax(
   count: Int,
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
-  ["ZPOPMAX", key, int.to_string(count), "WITHSCORES"]
+  ["ZPOPMAX", key, int.to_string(count)]
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
 
-pub type Bound(a) {
-  Inclusive(a)
-  Exclusive(a)
+pub type NumericBound(a) {
+  NumericInclusive(a)
+  NumericExclusive(a)
 }
 
-fn bound_to_string(bound: Bound(a), to_string_func: fn(a) -> String) -> String {
+fn numeric_bound_to_string(
+  bound: NumericBound(a),
+  to_string_func: fn(a) -> String,
+) -> String {
   case bound {
-    Inclusive(value) -> to_string_func(value)
-    Exclusive(value) -> "(" <> to_string_func(value)
+    NumericInclusive(value) -> to_string_func(value)
+    NumericExclusive(value) -> "(" <> to_string_func(value)
   }
 }
 
-pub fn generic_zrange(
+pub fn numeric_zrange(
   conn: Connection,
   key: String,
-  start: Bound(a),
-  stop: Bound(a),
+  start: NumericBound(a),
+  stop: NumericBound(a),
   bound_value_to_string: fn(a) -> String,
-  by: String,
+  by_score: Bool,
+  reverse: Bool,
+  timeout: Int,
+) -> Result(List(#(String, Score)), Error) {
+  let modifiers = case reverse {
+    True -> ["REV", "WITHSCORES"]
+    False -> ["WITHSCORES"]
+  }
+  let modifiers = case by_score {
+    True -> ["BYSCORE", ..modifiers]
+    False -> modifiers
+  }
+  [
+    "ZRANGE",
+    key,
+    numeric_bound_to_string(start, bound_value_to_string),
+    numeric_bound_to_string(stop, bound_value_to_string),
+    ..modifiers
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_sorted_set_member_array)
+}
+
+pub fn zrange(
+  conn: Connection,
+  key: String,
+  start: NumericBound(Int),
+  stop: NumericBound(Int),
   reverse: Bool,
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
@@ -1879,53 +1933,78 @@ pub fn generic_zrange(
   [
     "ZRANGE",
     key,
-    bound_to_string(start, bound_value_to_string),
-    bound_to_string(stop, bound_value_to_string),
-    by,
+    numeric_bound_to_string(start, int.to_string),
+    numeric_bound_to_string(stop, int.to_string),
     ..modifiers
   ]
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
 
-pub fn zrange_bylex(
-  conn: Connection,
-  key: String,
-  start: Bound(Int),
-  stop: Bound(Int),
-  reverse: Bool,
-  timeout: Int,
-) -> Result(List(#(String, Score)), Error) {
-  generic_zrange(
-    conn,
-    key,
-    start,
-    stop,
-    int.to_string,
-    "BYLEX",
-    reverse,
-    timeout,
-  )
-}
-
 pub fn zrange_byscore(
   conn: Connection,
   key: String,
-  start: Bound(Score),
-  stop: Bound(Score),
+  start: NumericBound(Score),
+  stop: NumericBound(Score),
   reverse: Bool,
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
-  generic_zrange(
-    conn,
+  let modifiers = case reverse {
+    True -> ["REV", "WITHSCORES"]
+    False -> ["WITHSCORES"]
+  }
+
+  [
+    "ZRANGE",
     key,
-    start,
-    stop,
-    score_to_string,
+    numeric_bound_to_string(start, score_to_string),
+    numeric_bound_to_string(stop, score_to_string),
     "BYSCORE",
-    reverse,
-    timeout,
-  )
+    ..modifiers
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_sorted_set_member_array)
+}
+
+pub type LexBound {
+  LexInclusive(String)
+  LexExclusive(String)
+  LexPositiveInfinity
+  LexNegativeInfinity
+}
+
+fn lex_bound_to_string(bound: LexBound) -> String {
+  case bound {
+    LexInclusive(value) -> "[" <> value
+    LexExclusive(value) -> "(" <> value
+    LexPositiveInfinity -> "+"
+    LexNegativeInfinity -> "-"
+  }
+}
+
+pub fn zrange_bylex(
+  conn: Connection,
+  key: String,
+  start: LexBound,
+  stop: LexBound,
+  reverse: Bool,
+  timeout: Int,
+) -> Result(List(String), Error) {
+  let modifiers = case reverse {
+    True -> ["REV"]
+    False -> []
+  }
+
+  [
+    "ZRANGE",
+    key,
+    lex_bound_to_string(start),
+    lex_bound_to_string(stop),
+    "BYLEX",
+    ..modifiers
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_bulk_string_array)
 }
 
 pub fn zrank(
