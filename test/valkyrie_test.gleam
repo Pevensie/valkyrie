@@ -11,7 +11,7 @@ import gleam/string
 import gleeunit
 import gleeunit/should
 import valkyrie
-import valkyrie/internal/protocol
+import valkyrie/resp
 
 pub fn main() {
   gleeunit.main()
@@ -145,10 +145,10 @@ pub fn url_config_integration_test() {
 pub fn custom_command_test() {
   use conn <- get_test_conn()
 
-  let assert Ok([protocol.BulkString("Hello World")]) =
+  let assert Ok([resp.BulkString("Hello World")]) =
     conn |> valkyrie.custom(["ECHO", "Hello World"], 1000)
 
-  let assert Ok([protocol.BulkString("Custom ping")]) =
+  let assert Ok([resp.BulkString("Custom ping")]) =
     conn |> valkyrie.custom(["PING", "Custom ping"], 1000)
 }
 

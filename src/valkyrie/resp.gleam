@@ -50,7 +50,7 @@ fn value_name(value: Value) -> String {
   }
 }
 
-fn values_to_string(values: List(Value)) -> String {
+fn values_to_names(values: List(Value)) -> String {
   case values {
     [] -> "[]"
     [value] -> value_name(value)
@@ -61,12 +61,14 @@ fn values_to_string(values: List(Value)) -> String {
   }
 }
 
+@internal
 pub fn error_string(expected expected: String, got got: List(Value)) -> String {
-  "Expected " <> expected <> ", got " <> values_to_string(got)
+  "Expected " <> expected <> ", got " <> values_to_names(got)
 }
 
 // ----- Encoding ----- //
 
+@internal
 pub fn encode_command(parts: List(String)) {
   parts
   |> list.map(BulkString)
@@ -241,6 +243,7 @@ fn set(value: set.Set(Value)) {
 
 // ----- Decoding ----- //
 
+@internal
 pub fn decode_value(value: BitArray) -> Result(List(Value), Nil) {
   decode_multiple(value, [])
 }
