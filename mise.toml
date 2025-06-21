@@ -13,7 +13,7 @@ run = [
 
     # KeyDB
     "docker compose --profile keydb up -d",
-    "gleam test",
+    "DATABASE=keydb gleam test",
     "docker compose --profile keydb down",
 
     # Dragonfly

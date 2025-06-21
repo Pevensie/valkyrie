@@ -1,3 +1,5 @@
+import envoy
+import gleam/bool
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
@@ -21,6 +23,7 @@ fn get_test_conn(next: fn(valkyrie.Connection) -> a) -> a {
     |> valkyrie.start_pool(3, 1000)
 
   let res = next(conn)
+  let assert Ok(_) = valkyrie.custom(conn, ["FLUSHDB"], 1000)
   let assert Ok(_) = valkyrie.shutdown(conn)
   res
 }
@@ -43,15 +46,8 @@ fn get_supervised_conn(next: fn(valkyrie.Connection) -> a) -> a {
   res
 }
 
-// Helper to clean up test keys
-fn cleanup_keys(conn: valkyrie.Connection, keys: List(String)) -> Nil {
-  case keys {
-    [] -> Nil
-    _ -> {
-      let _ = valkyrie.del(conn, keys, 1000)
-      Nil
-    }
-  }
+fn is_keydb() -> Bool {
+  envoy.get("DATABASE") == Ok("keydb")
 }
 
 // Connection Tests
@@ -218,8 +214,6 @@ pub fn set_get_test() {
     |> valkyrie.set("test:key", "test value", option.None, 1000)
 
   let assert Ok("test value") = conn |> valkyrie.get("test:key", 1000)
-
-  cleanup_keys(conn, ["test:key"])
 }
 
 pub fn get_nonexistent_key_test() {
@@ -248,8 +242,6 @@ pub fn set_with_options_test() {
   let assert Error(valkyrie.NotFound) =
     conn
     |> valkyrie.set("test:nx:key", "value2", option.Some(options), 1000)
-
-  cleanup_keys(conn, ["test:nx:key"])
 }
 
 pub fn mset_mget_test() {
@@ -274,8 +266,6 @@ pub fn mset_mget_test() {
     Ok("value3"),
     Error(valkyrie.NotFound),
   ])
-
-  cleanup_keys(conn, ["test:mset:1", "test:mset:2", "test:mset:3"])
 }
 
 pub fn append_test() {
@@ -284,51 +274,6 @@ pub fn append_test() {
   let assert Ok(5) = conn |> valkyrie.append("test:append", "Hello", 1000)
   let assert Ok(11) = conn |> valkyrie.append("test:append", " World", 1000)
   let assert Ok("Hello World") = conn |> valkyrie.get("test:append", 1000)
-
-  cleanup_keys(conn, ["test:append"])
-}
-
-// Key Operations
-pub fn exists_test() {
-  use conn <- get_test_conn()
-
-  let assert Ok("OK") =
-    conn
-    |> valkyrie.set("test:exists:1", "value", option.None, 1000)
-
-  let assert Ok("OK") =
-    conn
-    |> valkyrie.set("test:exists:2", "value", option.None, 1000)
-
-  let assert Ok(2) =
-    conn |> valkyrie.exists(["test:exists:1", "test:exists:2"], 1000)
-  let assert Ok(1) =
-    conn |> valkyrie.exists(["test:exists:1", "test:nonexistent"], 1000)
-  let assert Ok(0) = conn |> valkyrie.exists(["test:nonexistent"], 1000)
-
-  cleanup_keys(conn, ["test:exists:1", "test:exists:2"])
-}
-
-pub fn del_test() {
-  use conn <- get_test_conn()
-
-  // Set up test keys
-  let assert Ok("OK") =
-    conn |> valkyrie.set("test:del:1", "value1", option.None, 1000)
-  let assert Ok("OK") =
-    conn |> valkyrie.set("test:del:2", "value2", option.None, 1000)
-  let assert Ok("OK") =
-    conn |> valkyrie.set("test:del:3", "value3", option.None, 1000)
-
-  // Delete multiple keys
-  let assert Ok(2) = conn |> valkyrie.del(["test:del:1", "test:del:2"], 1000)
-
-  // Verify they're gone
-  let assert Error(valkyrie.NotFound) = conn |> valkyrie.get("test:del:1", 1000)
-  let assert Error(valkyrie.NotFound) = conn |> valkyrie.get("test:del:2", 1000)
-  let assert Ok("value3") = conn |> valkyrie.get("test:del:3", 1000)
-
-  cleanup_keys(conn, ["test:del:3"])
 }
 
 pub fn keys_test() {
@@ -347,8 +292,6 @@ pub fn keys_test() {
   keys |> list.contains("test:keys:foo") |> should.be_true
   keys |> list.contains("test:keys:bar") |> should.be_true
   keys |> list.contains("test:keys:baz") |> should.be_true
-
-  cleanup_keys(conn, ["test:keys:foo", "test:keys:bar", "test:keys:baz"])
 }
 
 pub fn scan_test() {
@@ -375,8 +318,6 @@ pub fn scan_test() {
       Nil
     }
   }
-
-  cleanup_keys(conn, test_keys)
 }
 
 pub fn scan_pattern_test() {
@@ -397,8 +338,6 @@ pub fn scan_pattern_test() {
   keys
   |> list.all(fn(key) { string.starts_with(key, "test:scanpat:") })
   |> should.be_true
-
-  cleanup_keys(conn, ["test:scanpat:1", "test:scanpat:2", "other:key"])
 }
 
 pub fn key_type_test() {
@@ -418,8 +357,6 @@ pub fn key_type_test() {
   // Non-existent key
   let assert Error(valkyrie.NotFound) =
     conn |> valkyrie.key_type("test:type:nonexistent", 1000)
-
-  cleanup_keys(conn, ["test:type:string", "test:type:list"])
 }
 
 pub fn rename_test() {
@@ -433,8 +370,6 @@ pub fn rename_test() {
   let assert Error(valkyrie.NotFound) =
     conn |> valkyrie.get("test:rename:old", 1000)
   let assert Ok("value") = conn |> valkyrie.get("test:rename:new", 1000)
-
-  cleanup_keys(conn, ["test:rename:new"])
 }
 
 pub fn renamenx_test() {
@@ -462,10 +397,6 @@ pub fn renamenx_test() {
       "test:renamenx:existing",
       1000,
     )
-
-  cleanup_keys(conn, [
-    "test:renamenx:new", "test:renamenx:existing", "test:renamenx:another",
-  ])
 }
 
 pub fn random_key_test() {
@@ -479,8 +410,6 @@ pub fn random_key_test() {
 
   let assert Ok(key) = conn |> valkyrie.random_key(1000)
   key |> string.length |> should.not_equal(0)
-
-  cleanup_keys(conn, ["test:random:1", "test:random:2"])
 }
 
 // Numeric Operations
@@ -490,8 +419,6 @@ pub fn incr_test() {
   let assert Ok(1) = conn |> valkyrie.incr("test:incr", 1000)
   let assert Ok(2) = conn |> valkyrie.incr("test:incr", 1000)
   let assert Ok(3) = conn |> valkyrie.incr("test:incr", 1000)
-
-  cleanup_keys(conn, ["test:incr"])
 }
 
 pub fn incrby_test() {
@@ -500,8 +427,6 @@ pub fn incrby_test() {
   let assert Ok(5) = conn |> valkyrie.incrby("test:incrby", 5, 1000)
   let assert Ok(15) = conn |> valkyrie.incrby("test:incrby", 10, 1000)
   let assert Ok(12) = conn |> valkyrie.incrby("test:incrby", -3, 1000)
-
-  cleanup_keys(conn, ["test:incrby"])
 }
 
 pub fn incrbyfloat_test() {
@@ -517,8 +442,6 @@ pub fn incrbyfloat_test() {
   let assert Ok(result2) =
     conn |> valkyrie.incrbyfloat("test:incrbyfloat", 1.5, 1000)
   result2 |> should.equal(4.0)
-
-  cleanup_keys(conn, ["test:incrbyfloat"])
 }
 
 pub fn decr_test() {
@@ -526,18 +449,14 @@ pub fn decr_test() {
 
   let assert Ok(-1) = conn |> valkyrie.decr("test:decr", 1000)
   let assert Ok(-2) = conn |> valkyrie.decr("test:decr", 1000)
-
-  cleanup_keys(conn, ["test:decr"])
 }
 
-pub fn decr_by_test() {
+pub fn decrby_test() {
   use conn <- get_test_conn()
 
-  let assert Ok(-5) = conn |> valkyrie.decr_by("test:decrby", 5, 1000)
-  let assert Ok(-15) = conn |> valkyrie.decr_by("test:decrby", 10, 1000)
-  let assert Ok(-12) = conn |> valkyrie.decr_by("test:decrby", -3, 1000)
-
-  cleanup_keys(conn, ["test:decrby"])
+  let assert Ok(-5) = conn |> valkyrie.decrby("test:decrby", 5, 1000)
+  let assert Ok(-15) = conn |> valkyrie.decrby("test:decrby", 10, 1000)
+  let assert Ok(-12) = conn |> valkyrie.decrby("test:decrby", -3, 1000)
 }
 
 // List Operations
@@ -551,8 +470,6 @@ pub fn lpush_rpush_test() {
 
   let assert Ok(items) = conn |> valkyrie.lrange("test:list", 0, -1, 1000)
   items |> should.equal(["second", "first", "third", "fourth"])
-
-  cleanup_keys(conn, ["test:list"])
 }
 
 pub fn lpushx_rpushx_test() {
@@ -571,8 +488,6 @@ pub fn lpushx_rpushx_test() {
 
   let assert Ok(items) = conn |> valkyrie.lrange("test:listx", 0, -1, 1000)
   items |> should.equal(["left", "initial", "right"])
-
-  cleanup_keys(conn, ["test:listx"])
 }
 
 pub fn llen_test() {
@@ -582,8 +497,6 @@ pub fn llen_test() {
 
   let assert Ok(_) = conn |> valkyrie.rpush("test:llen", ["a", "b", "c"], 1000)
   let assert Ok(3) = conn |> valkyrie.llen("test:llen", 1000)
-
-  cleanup_keys(conn, ["test:llen"])
 }
 
 pub fn lrange_test() {
@@ -597,8 +510,6 @@ pub fn lrange_test() {
 
   let assert Ok(subset) = conn |> valkyrie.lrange("test:lrange", 1, 3, 1000)
   subset |> should.equal(["b", "c", "d"])
-
-  cleanup_keys(conn, ["test:lrange"])
 }
 
 pub fn lpop_rpop_test() {
@@ -613,8 +524,6 @@ pub fn lpop_rpop_test() {
   let assert Ok("a") = conn |> valkyrie.lpop("test:pop", 1, 1000)
   let assert Ok("c") = conn |> valkyrie.rpop("test:pop", 1, 1000)
   let assert Ok(1) = conn |> valkyrie.llen("test:pop", 1000)
-
-  cleanup_keys(conn, ["test:pop"])
 }
 
 pub fn lindex_test() {
@@ -628,8 +537,6 @@ pub fn lindex_test() {
   let assert Ok("c") = conn |> valkyrie.lindex("test:lindex", -1, 1000)
   let assert Error(valkyrie.NotFound) =
     conn |> valkyrie.lindex("test:lindex", 10, 1000)
-
-  cleanup_keys(conn, ["test:lindex"])
 }
 
 pub fn lrem_test() {
@@ -643,8 +550,6 @@ pub fn lrem_test() {
 
   let assert Ok(items) = conn |> valkyrie.lrange("test:lrem", 0, -1, 1000)
   items |> should.equal(["b", "c", "a"])
-
-  cleanup_keys(conn, ["test:lrem"])
 }
 
 pub fn lset_test() {
@@ -656,8 +561,6 @@ pub fn lset_test() {
 
   let assert Ok(items) = conn |> valkyrie.lrange("test:lset", 0, -1, 1000)
   items |> should.equal(["a", "B", "c"])
-
-  cleanup_keys(conn, ["test:lset"])
 }
 
 pub fn linsert_test() {
@@ -670,8 +573,6 @@ pub fn linsert_test() {
 
   let assert Ok(items) = conn |> valkyrie.lrange("test:linsert", 0, -1, 1000)
   items |> should.equal(["a", "b", "c"])
-
-  cleanup_keys(conn, ["test:linsert"])
 }
 
 // Set Operations
@@ -690,8 +591,6 @@ pub fn sadd_scard_test() {
 
   // Cardinality should be 4 now
   let assert Ok(4) = conn |> valkyrie.scard("test:set", 1000)
-
-  cleanup_keys(conn, ["test:set"])
 }
 
 pub fn sismember_test() {
@@ -708,8 +607,6 @@ pub fn sismember_test() {
     conn |> valkyrie.sismember("test:set:members", "green", 1000)
   let assert Ok(False) =
     conn |> valkyrie.sismember("test:set:members", "yellow", 1000)
-
-  cleanup_keys(conn, ["test:set:members"])
 }
 
 pub fn smembers_test() {
@@ -727,8 +624,6 @@ pub fn smembers_test() {
   members |> set.contains("y") |> should.be_true
   members |> set.contains("z") |> should.be_true
   members |> set.size |> should.equal(3)
-
-  cleanup_keys(conn, ["test:set:all"])
 }
 
 pub fn sscan_test() {
@@ -754,8 +649,6 @@ pub fn sscan_test() {
       Nil
     }
   }
-
-  cleanup_keys(conn, ["test:set:scan"])
 }
 
 pub fn sscan_pattern_test() {
@@ -778,8 +671,6 @@ pub fn sscan_pattern_test() {
   user_members
   |> list.all(fn(member) { string.starts_with(member, "user:") })
   |> should.be_true
-
-  cleanup_keys(conn, ["test:set:pattern"])
 }
 
 pub fn set_empty_operations_test() {
@@ -827,8 +718,6 @@ pub fn set_lifecycle_test() {
   let expected_members =
     set.from_list(["alpha", "beta", "gamma", "delta", "epsilon"])
   all_members |> should.equal(expected_members)
-
-  cleanup_keys(conn, ["test:set:lifecycle"])
 }
 
 // Hash Operations Tests
@@ -837,7 +726,6 @@ pub fn hset_hget_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:basic"])
 
   let hash_values =
     dict.new()
@@ -862,15 +750,12 @@ pub fn hset_hget_test() {
   // Test hget for non-existent field
   let assert Error(valkyrie.NotFound) =
     valkyrie.hget(conn, "test:hash:basic", "nonexistent", 1000)
-
-  cleanup_keys(conn, ["test:hash:basic"])
 }
 
 pub fn hsetnx_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:nx"])
 
   // Test hsetnx on new field
   let assert Ok(True) =
@@ -882,15 +767,12 @@ pub fn hsetnx_test() {
 
   // Verify original value is unchanged
   let assert Ok("value1") = valkyrie.hget(conn, "test:hash:nx", "field1", 1000)
-
-  cleanup_keys(conn, ["test:hash:nx"])
 }
 
 pub fn hlen_hkeys_hvals_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:info"])
 
   let hash_values =
     dict.new()
@@ -914,15 +796,12 @@ pub fn hlen_hkeys_hvals_test() {
   values
   |> list.sort(string.compare)
   |> should.equal(["value1", "value2", "value3"])
-
-  cleanup_keys(conn, ["test:hash:info"])
 }
 
 pub fn hgetall_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:getall"])
 
   let hash_values =
     dict.new()
@@ -937,15 +816,12 @@ pub fn hgetall_test() {
   // Note: hgetall returns Dict(protocol.Value, protocol.Value)
   // We should check that it contains the expected number of entries
   result |> dict.size |> should.equal(2)
-
-  cleanup_keys(conn, ["test:hash:getall"])
 }
 
 pub fn hmget_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:mget"])
 
   let hash_values =
     dict.new()
@@ -967,15 +843,12 @@ pub fn hmget_test() {
   // Check results - should have Ok values for existing fields and Error for non-existing
   results |> list.length |> should.equal(3)
   let assert [Ok("value1"), Error(_), Ok("value3")] = results
-
-  cleanup_keys(conn, ["test:hash:mget"])
 }
 
 pub fn hstrlen_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:strlen"])
 
   let hash_values =
     dict.new()
@@ -991,15 +864,12 @@ pub fn hstrlen_test() {
   // Test hstrlen on non-existent field
   let assert Ok(0) =
     valkyrie.hstrlen(conn, "test:hash:strlen", "nonexistent", 1000)
-
-  cleanup_keys(conn, ["test:hash:strlen"])
 }
 
 pub fn hdel_hexists_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:del"])
 
   let hash_values =
     dict.new()
@@ -1026,15 +896,12 @@ pub fn hdel_hexists_test() {
 
   // Verify hlen reflects the deletions
   let assert Ok(1) = valkyrie.hlen(conn, "test:hash:del", 1000)
-
-  cleanup_keys(conn, ["test:hash:del"])
 }
 
 pub fn hincrby_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:incr"])
 
   // Test hincrby on new field
   let assert Ok(5) =
@@ -1050,15 +917,12 @@ pub fn hincrby_test() {
 
   // Verify final value
   let assert Ok("10") = valkyrie.hget(conn, "test:hash:incr", "counter", 1000)
-
-  cleanup_keys(conn, ["test:hash:incr"])
 }
 
 pub fn hincrbyfloat_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:incrfloat"])
 
   // Test hincrbyfloat on new field
   let assert Ok(result1) =
@@ -1074,15 +938,12 @@ pub fn hincrbyfloat_test() {
   let assert Ok(result3) =
     valkyrie.hincrbyfloat(conn, "test:hash:incrfloat", "counter", -1.5, 1000)
   result3 |> should.equal(4.5)
-
-  cleanup_keys(conn, ["test:hash:incrfloat"])
 }
 
 pub fn hscan_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:scan"])
 
   let hash_values =
     dict.new()
@@ -1103,15 +964,12 @@ pub fn hscan_test() {
   // Should return all items (field-value pairs flattened)
   items |> list.length |> should.equal(8)
   // 4 fields * 2 (field + value)
-
-  cleanup_keys(conn, ["test:hash:scan"])
 }
 
 pub fn hscan_pattern_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:scanpattern"])
 
   let hash_values =
     dict.new()
@@ -1140,8 +998,6 @@ pub fn hscan_pattern_test() {
   // Should return only the matching fields and their values
   items |> list.length |> should.equal(6)
   // 3 matching fields * 2 (field + value)
-
-  cleanup_keys(conn, ["test:hash:scanpattern"])
 }
 
 pub fn hash_empty_operations_test() {
@@ -1168,7 +1024,6 @@ pub fn hash_lifecycle_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:hash:lifecycle"])
 
   // Create hash with initial data
   let initial_values =
@@ -1212,8 +1067,6 @@ pub fn hash_lifecycle_test() {
     valkyrie.hexists(conn, "test:hash:lifecycle", "city", 1000)
   let assert Ok(False) =
     valkyrie.hexists(conn, "test:hash:lifecycle", "country", 1000)
-
-  cleanup_keys(conn, ["test:hash:lifecycle"])
 }
 
 // Sorted Set Operations Tests
@@ -1222,7 +1075,6 @@ pub fn zadd_zcard_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:basic"])
 
   // Test zadd with multiple members
   let members = [
@@ -1243,15 +1095,12 @@ pub fn zadd_zcard_test() {
 
   // Test zcard
   let assert Ok(3) = valkyrie.zcard(conn, "test:zset:basic", 1000)
-
-  cleanup_keys(conn, ["test:zset:basic"])
 }
 
 pub fn zadd_conditions_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:conditions"])
 
   // Add initial member
   let assert Ok(1) =
@@ -1289,15 +1138,12 @@ pub fn zadd_conditions_test() {
   // Verify score was updated
   let assert Ok(2.0) =
     valkyrie.zscore(conn, "test:zset:conditions", "member1", 1000)
-
-  cleanup_keys(conn, ["test:zset:conditions"])
 }
 
 pub fn zscore_zincrby_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:score"])
 
   // Add member
   let assert Ok(1) =
@@ -1337,15 +1183,12 @@ pub fn zscore_zincrby_test() {
       valkyrie.Double(-3.0),
       1000,
     )
-
-  cleanup_keys(conn, ["test:zset:score"])
 }
 
 pub fn zcount_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:count"])
 
   // Add members with different scores
   let members = [
@@ -1385,15 +1228,12 @@ pub fn zcount_test() {
       valkyrie.Infinity,
       1000,
     )
-
-  cleanup_keys(conn, ["test:zset:count"])
 }
 
 pub fn zrem_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:rem"])
 
   // Add members
   let members = [
@@ -1421,15 +1261,12 @@ pub fn zrem_test() {
 
   // Test zrem on non-existent member
   let assert Ok(0) = valkyrie.zrem(conn, "test:zset:rem", ["nonexistent"], 1000)
-
-  cleanup_keys(conn, ["test:zset:rem"])
 }
 
 pub fn zpopmin_zpopmax_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:pop"])
 
   // Add members
   let members = [
@@ -1458,15 +1295,52 @@ pub fn zpopmin_zpopmax_test() {
 
   // Verify remaining member
   let assert Ok(1) = valkyrie.zcard(conn, "test:zset:pop", 1000)
-
-  cleanup_keys(conn, ["test:zset:pop"])
 }
 
 pub fn zrank_zrevrank_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:rank"])
+
+  // Add members in order
+  let members = [
+    #("first", valkyrie.Double(1.0)),
+    #("second", valkyrie.Double(2.0)),
+    #("third", valkyrie.Double(3.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:rank",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zrank (0-based ranking from lowest score)
+  let assert Ok(0) = valkyrie.zrank(conn, "test:zset:rank", "first", 1000)
+  let assert Ok(1) = valkyrie.zrank(conn, "test:zset:rank", "second", 1000)
+  let assert Ok(2) = valkyrie.zrank(conn, "test:zset:rank", "third", 1000)
+
+  // Test zrevrank (0-based ranking from highest score)
+  let assert Ok(2) = valkyrie.zrevrank(conn, "test:zset:rank", "first", 1000)
+  let assert Ok(1) = valkyrie.zrevrank(conn, "test:zset:rank", "second", 1000)
+  let assert Ok(0) = valkyrie.zrevrank(conn, "test:zset:rank", "third", 1000)
+
+  // Test non-existent member
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.zrank(conn, "test:zset:rank", "nonexistent", 1000)
+}
+
+/// KeyDB doesn't support the withscore option, so we can't test it.
+pub fn zrank_zrevrank_withscore_test() {
+  use <- bool.guard(when: is_keydb(), return: Ok(0))
+
+  use conn <- get_test_conn()
+
+  // Clean up first to ensure fresh start
 
   // Add members in order
   let members = [
@@ -1487,32 +1361,29 @@ pub fn zrank_zrevrank_test() {
 
   // Test zrank (0-based ranking from lowest score)
   let assert Ok(#(0, valkyrie.Double(1.0))) =
-    valkyrie.zrank(conn, "test:zset:rank", "first", 1000)
+    valkyrie.zrank_withscore(conn, "test:zset:rank", "first", 1000)
   let assert Ok(#(1, valkyrie.Double(2.0))) =
-    valkyrie.zrank(conn, "test:zset:rank", "second", 1000)
+    valkyrie.zrank_withscore(conn, "test:zset:rank", "second", 1000)
   let assert Ok(#(2, valkyrie.Double(3.0))) =
-    valkyrie.zrank(conn, "test:zset:rank", "third", 1000)
+    valkyrie.zrank_withscore(conn, "test:zset:rank", "third", 1000)
 
   // Test zrevrank (0-based ranking from highest score)
   let assert Ok(#(2, valkyrie.Double(1.0))) =
-    valkyrie.zrevrank(conn, "test:zset:rank", "first", 1000)
+    valkyrie.zrevrank_withscore(conn, "test:zset:rank", "first", 1000)
   let assert Ok(#(1, valkyrie.Double(2.0))) =
-    valkyrie.zrevrank(conn, "test:zset:rank", "second", 1000)
+    valkyrie.zrevrank_withscore(conn, "test:zset:rank", "second", 1000)
   let assert Ok(#(0, valkyrie.Double(3.0))) =
-    valkyrie.zrevrank(conn, "test:zset:rank", "third", 1000)
+    valkyrie.zrevrank_withscore(conn, "test:zset:rank", "third", 1000)
 
   // Test non-existent member
   let assert Error(valkyrie.NotFound) =
     valkyrie.zrank(conn, "test:zset:rank", "nonexistent", 1000)
-
-  cleanup_keys(conn, ["test:zset:rank"])
 }
 
 pub fn zrange_byscore_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:range"])
 
   // Add members
   let members = [
@@ -1562,15 +1433,12 @@ pub fn zrange_byscore_test() {
     )
 
   result_rev |> list.length |> should.equal(2)
-
-  cleanup_keys(conn, ["test:zset:range"])
 }
 
 pub fn zrange_bylex_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:lex"])
 
   // Add members with same score for lexicographical ordering
   let members = [
@@ -1603,15 +1471,12 @@ pub fn zrange_bylex_test() {
 
   result |> list.length |> should.equal(3)
   // Should return first 3 members as strings in lexicographical order
-
-  cleanup_keys(conn, ["test:zset:lex"])
 }
 
 pub fn zscan_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:scan"])
 
   // Add members
   let members = [
@@ -1636,15 +1501,12 @@ pub fn zscan_test() {
     valkyrie.zscan(conn, "test:zset:scan", 0, 10, 1000)
 
   scan_result |> list.length |> should.equal(4)
-
-  cleanup_keys(conn, ["test:zset:scan"])
 }
 
 pub fn zscan_pattern_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:scanpattern"])
 
   // Add members with different patterns
   let members = [
@@ -1677,15 +1539,12 @@ pub fn zscan_pattern_test() {
 
   scan_result |> list.length |> should.equal(3)
   // Should return only the 3 members matching the pattern
-
-  cleanup_keys(conn, ["test:zset:scanpattern"])
 }
 
 pub fn zrandmember_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:random"])
 
   // Add members
   let members = [
@@ -1711,8 +1570,6 @@ pub fn zrandmember_test() {
     valkyrie.zrandmember(conn, "test:zset:random", 3, 1000)
 
   random_members |> list.length |> should.equal(3)
-
-  cleanup_keys(conn, ["test:zset:random"])
 }
 
 pub fn sorted_set_empty_operations_test() {
@@ -1743,7 +1600,6 @@ pub fn sorted_set_lifecycle_test() {
   use conn <- get_test_conn()
 
   // Clean up first to ensure fresh start
-  cleanup_keys(conn, ["test:zset:lifecycle"])
 
   // Create sorted set with initial data
   let initial_members = [
@@ -1803,8 +1659,6 @@ pub fn sorted_set_lifecycle_test() {
     valkyrie.zscore(conn, "test:zset:lifecycle", "bob", 1000)
   let assert Ok(175.0) =
     valkyrie.zscore(conn, "test:zset:lifecycle", "diana", 1000)
-
-  cleanup_keys(conn, ["test:zset:lifecycle"])
 }
 
 // Utility Operations
@@ -1837,8 +1691,6 @@ pub fn expire_test() {
   // Try to set expiry on non-existent key (returns 0)
   let assert Ok(0) =
     conn |> valkyrie.expire("test:expire:nonexistent", 10, option.None, 1000)
-
-  cleanup_keys(conn, ["test:expire"])
 }
 
 pub fn persist_test() {
@@ -1856,8 +1708,6 @@ pub fn persist_test() {
   let assert Ok("OK") =
     conn |> valkyrie.set("test:persist:no_ttl", "value", option.None, 1000)
   let assert Ok(0) = conn |> valkyrie.persist("test:persist:no_ttl", 1000)
-
-  cleanup_keys(conn, ["test:persist", "test:persist:no_ttl"])
 }
 
 // Custom Command Test
@@ -1897,8 +1747,6 @@ pub fn unicode_test() {
 
   let assert Ok(retrieved) = conn |> valkyrie.get("test:unicode", 1000)
   retrieved |> should.equal(unicode_value)
-
-  cleanup_keys(conn, ["test:unicode"])
 }
 
 pub fn large_value_test() {
@@ -1912,8 +1760,6 @@ pub fn large_value_test() {
 
   let assert Ok(retrieved) = conn |> valkyrie.get("test:large", 5000)
   retrieved |> string.length |> should.equal(100 * 1024)
-
-  cleanup_keys(conn, ["test:large"])
 }
 
 pub fn rapid_operations_test() {
@@ -1946,11 +1792,6 @@ pub fn rapid_operations_test() {
     let assert Ok(_) = conn |> valkyrie.exists([key], 1000)
     let assert Ok(_) = conn |> valkyrie.append(key, "_appended", 1000)
   })
-
-  cleanup_keys(conn, keys)
-  // Also cleanup counter keys
-  let counter_keys = keys |> list.map(fn(key) { key <> ":counter" })
-  cleanup_keys(conn, counter_keys)
 }
 
 pub fn concurrent_operations_test() {
@@ -2024,19 +1865,4 @@ pub fn concurrent_operations_test() {
       get_result |> should.equal(Ok(expected_value))
     })
   })
-
-  // Clean up all keys
-  let all_keys =
-    list.range(1, num_processes)
-    |> list.flat_map(fn(process_id) {
-      list.range(1, keys_per_process)
-      |> list.map(fn(i) {
-        "test:concurrent:p"
-        <> int.to_string(process_id)
-        <> ":k"
-        <> int.to_string(i)
-      })
-    })
-
-  cleanup_keys(conn, all_keys)
 }

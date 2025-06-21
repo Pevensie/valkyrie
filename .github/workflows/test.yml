@@ -11,18 +11,22 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image:
-          [
-            valkey/valkey:7,
-            valkey/valkey:8,
-            redis:7,
-            redis:8,
-            eqalpha/keydb:latest,
-            docker.dragonflydb.io/dragonflydb/dragonfly,
-          ]
+        database:
+          - image: valkey/valkey:7
+            name: valkey
+          - image: valkey/valkey:8
+            name: valkey
+          - image: redis:7
+            name: redis
+          - image: redis:8
+            name: redis
+          - image: eqalpha/keydb:latest
+            name: keydb
+          - image: docker.dragonflydb.io/dragonflydb/dragonfly
+            name: dragonfly
     services:
-      valkey:
-        image: ${{ matrix.image }}
+      database:
+        image: ${{ matrix.database.image }}
         ports:
           - 6379:6379
     steps:
@@ -34,4 +38,6 @@ jobs:
           rebar3-version: "3"
       - run: gleam deps download
       - run: gleam test
+        env:
+          DATABASE: ${{ matrix.database.name }}
       - run: gleam format --check src test
