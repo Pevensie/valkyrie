@@ -286,33 +286,17 @@ fn expect_integer(value: List(protocol.Value)) -> Result(Int, Error) {
 fn expect_float(value: List(protocol.Value)) -> Result(Float, Error) {
   case value {
     [protocol.BulkString(new)] ->
-      float.parse(new)
-      |> result.replace_error(ProtocolError("Invalid float: " <> new))
+      case float.parse(new) {
+        Ok(f) -> Ok(f)
+        Error(_) ->
+          // Try parsing as int first (Redis sometimes returns "4" instead of "4.0")
+          case int.parse(new) {
+            Ok(i) -> Ok(int.to_float(i))
+            Error(_) -> Error(ProtocolError("Invalid float: " <> new))
+          }
+      }
     _ ->
       Error(ProtocolError(protocol.error_string(expected: "float", got: value)))
-  }
-}
-
-fn expect_simple_string(value: List(protocol.Value)) -> Result(String, Error) {
-  case value {
-    [protocol.SimpleString(str)] -> Ok(str)
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(
-          expected: "simple string",
-          got: value,
-        )),
-      )
-  }
-}
-
-fn expect_bulk_string(value: List(protocol.Value)) -> Result(String, Error) {
-  case value {
-    [protocol.BulkString(str)] -> Ok(str)
-    _ ->
-      Error(
-        ProtocolError(protocol.error_string(expected: "bulk string", got: value)),
-      )
   }
 }
 
@@ -323,6 +307,19 @@ fn expect_any_string(value: List(protocol.Value)) -> Result(String, Error) {
       Error(
         ProtocolError(protocol.error_string(
           expected: "string or null",
+          got: value,
+        )),
+      )
+  }
+}
+
+fn expect_simple_string(value: List(protocol.Value)) -> Result(String, Error) {
+  case value {
+    [protocol.SimpleString(str)] -> Ok(str)
+    _ ->
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "simple string",
           got: value,
         )),
       )
@@ -390,6 +387,7 @@ fn expect_key_type(value) {
         "hash" -> Ok(Hash)
         "string" -> Ok(String)
         "stream" -> Ok(Stream)
+        "none" -> Error(NotFound)
         _ -> Error(ProtocolError("Invalid key type: " <> str))
       }
     _ ->
@@ -689,7 +687,7 @@ pub fn set(
   let command = ["SET", key, value, ..additions]
 
   execute(conn, command, timeout)
-  |> result.try(expect_any_string)
+  |> result.try(expect_any_nullable_string)
 }
 
 /// see [here](https://redis.io/commands/mset)!
@@ -978,7 +976,21 @@ pub fn lpop(
 ) -> Result(String, Error) {
   ["LPOP", key, int.to_string(count)]
   |> execute(conn, _, timeout)
-  |> result.try(expect_bulk_string)
+  |> result.try(fn(value) {
+    case value {
+      // When count is provided, Redis returns an array
+      [protocol.Array([protocol.BulkString(str)])] -> Ok(str)
+      [protocol.Array([])] -> Error(NotFound)
+      [protocol.Null] -> Error(NotFound)
+      _ ->
+        Error(
+          ProtocolError(protocol.error_string(
+            expected: "string or array",
+            got: value,
+          )),
+        )
+    }
+  })
 }
 
 /// see [here](https://redis.io/commands/rpop)!
@@ -990,7 +1002,21 @@ pub fn rpop(
 ) -> Result(String, Error) {
   ["RPOP", key, int.to_string(count)]
   |> execute(conn, _, timeout)
-  |> result.try(expect_bulk_string)
+  |> result.try(fn(value) {
+    case value {
+      // When count is provided, Redis returns an array
+      [protocol.Array([protocol.BulkString(str)])] -> Ok(str)
+      [protocol.Array([])] -> Error(NotFound)
+      [protocol.Null] -> Error(NotFound)
+      _ ->
+        Error(
+          ProtocolError(protocol.error_string(
+            expected: "string or array",
+            got: value,
+          )),
+        )
+    }
+  })
 }
 
 /// see [here](https://redis.io/commands/lindex)!
