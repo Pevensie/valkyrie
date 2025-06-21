@@ -16,6 +16,11 @@ run = [
     "gleam test",
     "docker compose --profile keydb down",
 
+    # Dragonfly
+    "docker compose --profile dragonfly up -d",
+    "gleam test",
+    "docker compose --profile dragonfly down",
+
     # Valkey
     "docker compose --profile valkey up -d",
     "gleam test",

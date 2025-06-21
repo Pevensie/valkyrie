@@ -19,3 +19,10 @@ services:
     ports:
       - 6379:6379
     restart: always
+
+  dragonfly:
+    profiles: ["dragonfly", "all"]
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    ports:
+      - 6379:6379
+    restart: always

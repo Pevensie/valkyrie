@@ -427,8 +427,14 @@ fn expect_float(value: List(protocol.Value)) -> Result(Float, Error) {
             Error(_) -> Error(ProtocolError("Invalid float: " <> new))
           }
       }
+    [protocol.Double(value)] -> Ok(value)
     _ ->
-      Error(ProtocolError(protocol.error_string(expected: "float", got: value)))
+      Error(
+        ProtocolError(protocol.error_string(
+          expected: "bulk string representation of a float, or double",
+          got: value,
+        )),
+      )
   }
 }
 
