@@ -20,10 +20,9 @@ jobs:
             eqalpha/keydb:latest,
             docker.dragonflydb.io/dragonflydb/dragonfly,
           ]
-        version: [7, 8]
     services:
       valkey:
-        image: ${{ matrix.image }}:${{ matrix.version }}
+        image: ${{ matrix.image }}
         ports:
           - 6379:6379
     steps:
