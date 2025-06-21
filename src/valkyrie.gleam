@@ -1185,7 +1185,7 @@ pub fn decr(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
 /// Returns the new value after decrementing.
 ///
 /// See the [Redis DECRBY documentation](https://redis.io/commands/decrby) for more details.
-pub fn decr_by(
+pub fn decrby(
   conn: Connection,
   key: String,
   value: Int,
@@ -2012,6 +2012,18 @@ pub fn zrank(
   key: String,
   member: String,
   timeout: Int,
+) -> Result(Int, Error) {
+  ["ZRANK", key, member]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_integer)
+}
+
+// Note: not supported by keydb
+pub fn zrank_withscore(
+  conn: Connection,
+  key: String,
+  member: String,
+  timeout: Int,
 ) -> Result(#(Int, Score), Error) {
   ["ZRANK", key, member, "WITHSCORE"]
   |> execute(conn, _, timeout)
@@ -2019,6 +2031,18 @@ pub fn zrank(
 }
 
 pub fn zrevrank(
+  conn: Connection,
+  key: String,
+  member: String,
+  timeout: Int,
+) -> Result(Int, Error) {
+  ["ZREVRANK", key, member]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_nullable_integer)
+}
+
+// Note: not supported by keydb
+pub fn zrevrank_withscore(
   conn: Connection,
   key: String,
   member: String,
