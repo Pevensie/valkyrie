@@ -1706,7 +1706,7 @@ fn score_from_string(score: String) -> Result(Score, Nil) {
   }
 }
 
-pub type ZaddCondition {
+pub type ZAddCondition {
   /// Equivalent to `NX`
   IfNotExistsInSet
   /// Equivalent to `XX`
@@ -1721,7 +1721,7 @@ pub fn zadd(
   conn: Connection,
   key: String,
   members: List(#(String, Score)),
-  condition: ZaddCondition,
+  condition: ZAddCondition,
   return_changed: Bool,
   timeout: Int,
 ) -> Result(Int, Error) {
@@ -1887,35 +1887,6 @@ fn numeric_bound_to_string(
     NumericInclusive(value) -> to_string_func(value)
     NumericExclusive(value) -> "(" <> to_string_func(value)
   }
-}
-
-pub fn numeric_zrange(
-  conn: Connection,
-  key: String,
-  start: NumericBound(a),
-  stop: NumericBound(a),
-  bound_value_to_string: fn(a) -> String,
-  by_score: Bool,
-  reverse: Bool,
-  timeout: Int,
-) -> Result(List(#(String, Score)), Error) {
-  let modifiers = case reverse {
-    True -> ["REV", "WITHSCORES"]
-    False -> ["WITHSCORES"]
-  }
-  let modifiers = case by_score {
-    True -> ["BYSCORE", ..modifiers]
-    False -> modifiers
-  }
-  [
-    "ZRANGE",
-    key,
-    numeric_bound_to_string(start, bound_value_to_string),
-    numeric_bound_to_string(stop, bound_value_to_string),
-    ..modifiers
-  ]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_sorted_set_member_array)
 }
 
 pub fn zrange(
