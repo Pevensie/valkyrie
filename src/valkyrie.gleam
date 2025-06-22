@@ -2322,7 +2322,6 @@ pub fn hgetall(
   conn: Connection,
   key: String,
   timeout: Int,
-  // TODO: expose protocol, probably
 ) -> Result(dict.Dict(resp.Value, resp.Value), Error) {
   ["HGETALL", key]
   |> execute(conn, _, timeout)
