@@ -24,7 +24,7 @@ fn get_test_conn(next: fn(valkyrie.Connection) -> a) -> a {
 
   let res = next(conn)
   let assert Ok(_) = valkyrie.custom(conn, ["FLUSHDB"], 1000)
-  let assert Ok(_) = valkyrie.shutdown(conn)
+  let assert Ok(_) = valkyrie.shutdown(conn, 1000)
   res
 }
 
@@ -61,7 +61,7 @@ pub fn create_connection_test() {
     |> valkyrie.create_connection(1000)
 
   let assert Ok("PONG") = valkyrie.ping(conn, option.None, 1000)
-  let assert Ok(_) = valkyrie.shutdown(conn)
+  let assert Ok(_) = valkyrie.shutdown(conn, 1000)
 }
 
 pub fn pool_connection_test() {
@@ -135,7 +135,7 @@ pub fn url_config_integration_test() {
   let assert Ok(config) = valkyrie.url_config("redis://localhost:6379")
   let assert Ok(conn) = config |> valkyrie.create_connection(1000)
   let assert Ok("PONG") = valkyrie.ping(conn, option.None, 1000)
-  let assert Ok(_) = valkyrie.shutdown(conn)
+  let assert Ok(_) = valkyrie.shutdown(conn, 1000)
 }
 
 // ---------------------------------- //
@@ -175,18 +175,106 @@ pub fn get_nonexistent_key_test() {
 pub fn set_with_options_test() {
   use conn <- get_test_conn()
 
-  let options =
+  // Test NX (if not exists) condition
+  let nx_options =
     valkyrie.SetOptions(
       existence_condition: option.Some(valkyrie.IfNotExists),
       return_old: False,
       expiry_option: option.None,
     )
-
   let assert Ok("OK") =
-    conn |> valkyrie.set("test:nx:key", "value1", option.Some(options), 1000)
+    conn |> valkyrie.set("test:set:nx", "first", option.Some(nx_options), 1000)
 
-  let assert Error(valkyrie.NotFound) =
-    conn |> valkyrie.set("test:nx:key", "value2", option.Some(options), 1000)
+  // Should fail because key exists
+  let assert Error(_) =
+    conn |> valkyrie.set("test:set:nx", "second", option.Some(nx_options), 1000)
+
+  // Test XX (if exists) condition
+  let xx_options =
+    valkyrie.SetOptions(
+      existence_condition: option.Some(valkyrie.IfExists),
+      return_old: False,
+      expiry_option: option.None,
+    )
+  let assert Ok("OK") =
+    conn
+    |> valkyrie.set("test:set:nx", "updated", option.Some(xx_options), 1000)
+
+  // Should fail because key doesn't exist
+  let assert Error(_) =
+    conn
+    |> valkyrie.set(
+      "test:set:nonexistent",
+      "value",
+      option.Some(xx_options),
+      1000,
+    )
+
+  // Test return old value
+  let return_old_options =
+    valkyrie.SetOptions(
+      existence_condition: option.None,
+      return_old: True,
+      expiry_option: option.None,
+    )
+  let assert Ok("updated") =
+    conn
+    |> valkyrie.set(
+      "test:set:nx",
+      "newest",
+      option.Some(return_old_options),
+      1000,
+    )
+
+  // Test expiry options
+  let expiry_seconds_options =
+    valkyrie.SetOptions(
+      existence_condition: option.None,
+      return_old: False,
+      expiry_option: option.Some(valkyrie.ExpirySeconds(60)),
+    )
+  let assert Ok("OK") =
+    conn
+    |> valkyrie.set(
+      "test:set:expire",
+      "value",
+      option.Some(expiry_seconds_options),
+      1000,
+    )
+
+  let expiry_millis_options =
+    valkyrie.SetOptions(
+      existence_condition: option.None,
+      return_old: False,
+      expiry_option: option.Some(valkyrie.ExpiryMilliseconds(60_000)),
+    )
+  let assert Ok("OK") =
+    conn
+    |> valkyrie.set(
+      "test:set:expire_ms",
+      "value",
+      option.Some(expiry_millis_options),
+      1000,
+    )
+
+  // Test KEEPTTL option
+  let assert Ok(1) =
+    conn |> valkyrie.expire("test:set:expire", 30, option.None, 1000)
+
+  let keep_ttl_options =
+    valkyrie.SetOptions(
+      existence_condition: option.None,
+      return_old: False,
+      expiry_option: option.Some(valkyrie.KeepTtl),
+    )
+  let assert Ok("OK") =
+    conn
+    |> valkyrie.set(
+      "test:set:expire",
+      "new_value",
+      option.Some(keep_ttl_options),
+      1000,
+    )
 }
 
 pub fn mset_mget_test() {
@@ -477,6 +565,88 @@ pub fn expire_test() {
 
   let assert Ok(0) =
     conn |> valkyrie.expire("test:expire:nonexistent", 10, option.None, 1000)
+}
+
+pub fn expire_condition_variations_test() {
+  use conn <- get_test_conn()
+
+  // Set up test keys for IfNoExpiry condition
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:expire:no_ttl_1", "value", option.None, 1000)
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:expire:with_ttl_1", "value", option.None, 1000)
+  let assert Ok(1) =
+    conn |> valkyrie.expire("test:expire:with_ttl_1", 3600, option.None, 1000)
+
+  // Test IfNoExpiry condition
+  let assert Ok(1) =
+    conn
+    |> valkyrie.expire(
+      "test:expire:no_ttl_1",
+      60,
+      option.Some(valkyrie.IfNoExpiry),
+      1000,
+    )
+  let assert Ok(0) =
+    conn
+    |> valkyrie.expire(
+      "test:expire:with_ttl_1",
+      60,
+      option.Some(valkyrie.IfNoExpiry),
+      1000,
+    )
+
+  // Set up fresh test keys for IfHasExpiry condition
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:expire:no_ttl_2", "value", option.None, 1000)
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:expire:with_ttl_2", "value", option.None, 1000)
+  let assert Ok(1) =
+    conn |> valkyrie.expire("test:expire:with_ttl_2", 3600, option.None, 1000)
+
+  // Test IfHasExpiry condition
+  let assert Ok(0) =
+    conn
+    |> valkyrie.expire(
+      "test:expire:no_ttl_2",
+      60,
+      option.Some(valkyrie.IfHasExpiry),
+      1000,
+    )
+  let assert Ok(1) =
+    conn
+    |> valkyrie.expire(
+      "test:expire:with_ttl_2",
+      60,
+      option.Some(valkyrie.IfHasExpiry),
+      1000,
+    )
+
+  // Set up test key for comparison conditions
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:expire:with_ttl_3", "value", option.None, 1000)
+  let assert Ok(1) =
+    conn |> valkyrie.expire("test:expire:with_ttl_3", 3600, option.None, 1000)
+
+  // Test IfGreaterThan condition (7200 > 3600, should succeed)
+  let assert Ok(1) =
+    conn
+    |> valkyrie.expire(
+      "test:expire:with_ttl_3",
+      7200,
+      option.Some(valkyrie.IfGreaterThan),
+      1000,
+    )
+
+  // Test IfLessThan condition (30 < 7200, should succeed)
+  let assert Ok(1) =
+    conn
+    |> valkyrie.expire(
+      "test:expire:with_ttl_3",
+      30,
+      option.Some(valkyrie.IfLessThan),
+      1000,
+    )
 }
 
 pub fn persist_test() {
@@ -881,6 +1051,84 @@ pub fn zrank_withscore_test() {
     valkyrie.zrank(conn, "test:zset:rank", "nonexistent", 1000)
 }
 
+pub fn zrevrank_test() {
+  use conn <- get_test_conn()
+
+  let members = [
+    #("lowest", valkyrie.Double(1.0)),
+    #("middle", valkyrie.Double(5.0)),
+    #("highest", valkyrie.Double(10.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:revrank",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test reverse ranks (highest score = rank 0)
+  let assert Ok(0) =
+    conn |> valkyrie.zrevrank("test:zset:revrank", "highest", 1000)
+  let assert Ok(1) =
+    conn |> valkyrie.zrevrank("test:zset:revrank", "middle", 1000)
+  let assert Ok(2) =
+    conn |> valkyrie.zrevrank("test:zset:revrank", "lowest", 1000)
+
+  // Test non-existent member
+  let assert Error(valkyrie.NotFound) =
+    conn |> valkyrie.zrevrank("test:zset:revrank", "nonexistent", 1000)
+
+  // Test non-existent key
+  let assert Error(valkyrie.NotFound) =
+    conn |> valkyrie.zrevrank("test:zset:nonexistent", "member", 1000)
+}
+
+pub fn zrevrank_withscore_test() {
+  // KeyDB doesn't support WITHSCORE in zrevrank
+  use <- bool.guard(when: is_keydb(), return: Ok(#(0, valkyrie.Double(0.0))))
+  use conn <- get_test_conn()
+
+  let members = [
+    #("lowest", valkyrie.Double(1.0)),
+    #("middle", valkyrie.Double(5.0)),
+    #("highest", valkyrie.Double(10.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:revrank_score",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test reverse rank with score
+  let assert Ok(#(0, valkyrie.Double(10.0))) =
+    conn
+    |> valkyrie.zrevrank_withscore("test:zset:revrank_score", "highest", 1000)
+  let assert Ok(#(1, valkyrie.Double(5.0))) =
+    conn
+    |> valkyrie.zrevrank_withscore("test:zset:revrank_score", "middle", 1000)
+  let assert Ok(#(2, valkyrie.Double(1.0))) =
+    conn
+    |> valkyrie.zrevrank_withscore("test:zset:revrank_score", "lowest", 1000)
+
+  // Test non-existent member
+  let assert Error(valkyrie.NotFound) =
+    conn
+    |> valkyrie.zrevrank_withscore(
+      "test:zset:revrank_score",
+      "nonexistent",
+      1000,
+    )
+}
+
 pub fn zscan_test() {
   use conn <- get_test_conn()
 
@@ -934,6 +1182,298 @@ pub fn zscan_pattern_test() {
       1000,
     )
   scan_result |> list.length |> should.equal(3)
+}
+
+pub fn zrandmember_test() {
+  use conn <- get_test_conn()
+
+  let members = [
+    #("member1", valkyrie.Double(1.0)),
+    #("member2", valkyrie.Double(2.0)),
+    #("member3", valkyrie.Double(3.0)),
+    #("member4", valkyrie.Double(4.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:random",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test getting 2 random members
+  let assert Ok(random_members) =
+    conn |> valkyrie.zrandmember("test:zset:random", 2, 1000)
+  random_members |> list.length |> should.equal(2)
+
+  // Test getting 1 random member
+  let assert Ok(single_member) =
+    conn |> valkyrie.zrandmember("test:zset:random", 1, 1000)
+  single_member |> list.length |> should.equal(1)
+
+  // Test empty set
+  let assert Ok(empty_members) =
+    conn |> valkyrie.zrandmember("test:zset:empty", 2, 1000)
+  empty_members |> list.length |> should.equal(0)
+}
+
+pub fn zpopmin_zpopmax_test() {
+  use conn <- get_test_conn()
+
+  let members = [
+    #("low", valkyrie.Double(1.0)),
+    #("medium", valkyrie.Double(5.0)),
+    #("high", valkyrie.Double(10.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:pop",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test zpopmin
+  let assert Ok(min_members) =
+    conn |> valkyrie.zpopmin("test:zset:pop", 1, 1000)
+  min_members |> should.equal([#("low", valkyrie.Double(1.0))])
+
+  // Test zpopmax
+  let assert Ok(max_members) =
+    conn |> valkyrie.zpopmax("test:zset:pop", 1, 1000)
+  max_members |> should.equal([#("high", valkyrie.Double(10.0))])
+
+  // Verify remaining member
+  let assert Ok(1) = conn |> valkyrie.zcard("test:zset:pop", 1000)
+
+  // Test popping multiple
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:multi",
+      [
+        #("a", valkyrie.Double(1.0)),
+        #("b", valkyrie.Double(2.0)),
+        #("c", valkyrie.Double(3.0)),
+      ],
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  let assert Ok(multi_min) =
+    conn |> valkyrie.zpopmin("test:zset:multi", 2, 1000)
+  multi_min |> list.length |> should.equal(2)
+
+  // Test empty set
+  let assert Ok(empty_min) =
+    conn |> valkyrie.zpopmin("test:zset:empty", 1, 1000)
+  empty_min |> list.length |> should.equal(0)
+
+  let assert Ok(empty_max) =
+    conn |> valkyrie.zpopmax("test:zset:empty", 1, 1000)
+  empty_max |> list.length |> should.equal(0)
+}
+
+pub fn zrange_test() {
+  use conn <- get_test_conn()
+
+  let members = [
+    #("first", valkyrie.Double(1.0)),
+    #("second", valkyrie.Double(2.0)),
+    #("third", valkyrie.Double(3.0)),
+    #("fourth", valkyrie.Double(4.0)),
+    #("fifth", valkyrie.Double(5.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:range",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test basic range
+  let assert Ok([
+    #("first", valkyrie.Double(1.0)),
+    #("second", valkyrie.Double(2.0)),
+    #("third", valkyrie.Double(3.0)),
+  ]) =
+    conn
+    |> valkyrie.zrange(
+      "test:zset:range",
+      valkyrie.NumericInclusive(0),
+      valkyrie.NumericInclusive(2),
+      False,
+      1000,
+    )
+
+  // Test reverse range
+  let assert Ok([
+    #("fifth", valkyrie.Double(5.0)),
+    #("fourth", valkyrie.Double(4.0)),
+    #("third", valkyrie.Double(3.0)),
+  ]) =
+    conn
+    |> valkyrie.zrange(
+      "test:zset:range",
+      valkyrie.NumericInclusive(0),
+      valkyrie.NumericInclusive(2),
+      True,
+      1000,
+    )
+
+  // Test different inclusive bounds
+  let assert Ok([
+    #("second", valkyrie.Double(2.0)),
+    #("third", valkyrie.Double(3.0)),
+    #("fourth", valkyrie.Double(4.0)),
+  ]) =
+    conn
+    |> valkyrie.zrange(
+      "test:zset:range",
+      valkyrie.NumericInclusive(1),
+      valkyrie.NumericInclusive(3),
+      False,
+      1000,
+    )
+
+  // Test empty range
+  let assert Ok([]) =
+    conn
+    |> valkyrie.zrange(
+      "test:zset:empty",
+      valkyrie.NumericInclusive(0),
+      valkyrie.NumericInclusive(2),
+      False,
+      1000,
+    )
+}
+
+pub fn zrange_byscore_test() {
+  use conn <- get_test_conn()
+
+  let members = [
+    #("low1", valkyrie.Double(1.0)),
+    #("low2", valkyrie.Double(1.5)),
+    #("medium", valkyrie.Double(5.0)),
+    #("high1", valkyrie.Double(10.0)),
+    #("high2", valkyrie.Double(15.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:byscore",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test basic score range
+  let assert Ok([
+    #("low1", valkyrie.Double(1.0)),
+    #("low2", valkyrie.Double(1.5)),
+  ]) =
+    conn
+    |> valkyrie.zrange_byscore(
+      "test:zset:byscore",
+      valkyrie.NumericInclusive(valkyrie.Double(1.0)),
+      valkyrie.NumericExclusive(valkyrie.Double(5.0)),
+      False,
+      1000,
+    )
+
+  // Test reversed score range
+  let assert Ok([
+    #("high2", valkyrie.Double(15.0)),
+    #("high1", valkyrie.Double(10.0)),
+  ]) =
+    conn
+    |> valkyrie.zrange_byscore(
+      "test:zset:byscore",
+      valkyrie.NumericInclusive(valkyrie.Double(15.0)),
+      valkyrie.NumericInclusive(valkyrie.Double(10.0)),
+      True,
+      1000,
+    )
+
+  // Test empty range
+  let assert Ok([]) =
+    conn
+    |> valkyrie.zrange_byscore(
+      "test:zset:byscore",
+      valkyrie.NumericInclusive(valkyrie.Double(20.0)),
+      valkyrie.NumericInclusive(valkyrie.Double(25.0)),
+      False,
+      1000,
+    )
+}
+
+pub fn zrange_bylex_test() {
+  use conn <- get_test_conn()
+
+  // Create sorted set where all members have the same score
+  let members = [
+    #("apple", valkyrie.Double(0.0)),
+    #("banana", valkyrie.Double(0.0)),
+    #("cherry", valkyrie.Double(0.0)),
+    #("date", valkyrie.Double(0.0)),
+    #("elderberry", valkyrie.Double(0.0)),
+  ]
+
+  let assert Ok(_) =
+    valkyrie.zadd(
+      conn,
+      "test:zset:bylex",
+      members,
+      valkyrie.IfNotExistsInSet,
+      False,
+      1000,
+    )
+
+  // Test basic lexicographic range
+  let assert Ok(["banana", "cherry"]) =
+    conn
+    |> valkyrie.zrange_bylex(
+      "test:zset:bylex",
+      valkyrie.LexInclusive("banana"),
+      valkyrie.LexExclusive("date"),
+      False,
+      1000,
+    )
+
+  // Test reverse lexicographic range
+  let assert Ok(["elderberry", "date", "cherry"]) =
+    conn
+    |> valkyrie.zrange_bylex(
+      "test:zset:bylex",
+      valkyrie.LexInclusive("elderberry"),
+      valkyrie.LexExclusive("banana"),
+      True,
+      1000,
+    )
+
+  // Test empty range
+  let assert Ok([]) =
+    conn
+    |> valkyrie.zrange_bylex(
+      "test:zset:bylex",
+      valkyrie.LexExclusive("fig"),
+      valkyrie.LexExclusive("guava"),
+      False,
+      1000,
+    )
 }
 
 // -------------------------- //
@@ -1204,4 +1744,57 @@ pub fn large_value_test() {
   retrieved |> should.equal(large_value)
 
   let assert Ok(100_005) = valkyrie.append(conn, "test:large", "hello", 1000)
+}
+
+pub fn pool_error_scenarios_test() {
+  // Test pool creation with invalid config
+  let invalid_config =
+    valkyrie.Config(
+      host: "nonexistent.redis.server.invalid",
+      port: 6379,
+      auth: valkyrie.NoAuth,
+    )
+
+  // This should fail to create connections but not panic
+  let pool_result = invalid_config |> valkyrie.start_pool(1, 100)
+  case pool_result {
+    Error(_) -> Nil
+    Ok(conn) -> {
+      // If it somehow succeeds, clean up
+      let _ = valkyrie.shutdown(conn, 1000)
+      Nil
+    }
+  }
+  pool_result |> should.be_error
+}
+
+pub fn edge_case_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test operations on empty/non-existent keys
+  let assert Ok(0) = conn |> valkyrie.llen("nonexistent:list", 1000)
+  let assert Ok([]) = conn |> valkyrie.lrange("nonexistent:list", 0, -1, 1000)
+  let assert Error(valkyrie.NotFound) =
+    conn |> valkyrie.lpop("nonexistent:list", 1, 1000)
+
+  // Test very large list operations
+  let large_items = list.range(1, 1000) |> list.map(int.to_string)
+  let assert Ok(1000) =
+    conn |> valkyrie.rpush("test:large_list", large_items, 5000)
+  let assert Ok(1000) = conn |> valkyrie.llen("test:large_list", 1000)
+
+  // Test hash with many fields
+  let large_hash =
+    list.range(1, 100)
+    |> list.fold(dict.new(), fn(acc, i) {
+      dict.insert(acc, "field" <> int.to_string(i), "value" <> int.to_string(i))
+    })
+  let assert Ok(100) = valkyrie.hset(conn, "test:large_hash", large_hash, 5000)
+  let assert Ok(100) = valkyrie.hlen(conn, "test:large_hash", 1000)
+
+  // Test set with many members
+  let large_set_members = list.range(1, 100) |> list.map(int.to_string)
+  let assert Ok(100) =
+    conn |> valkyrie.sadd("test:large_set", large_set_members, 5000)
+  let assert Ok(100) = conn |> valkyrie.scard("test:large_set", 1000)
 }

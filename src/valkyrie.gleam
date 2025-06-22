@@ -1,5 +1,3 @@
-//// All timeouts are in milliseconds
-
 import bath
 import gleam/bit_array
 import gleam/dict
@@ -50,6 +48,30 @@ pub type Error {
   TcpError(mug.Error)
   ServerError(String)
   PoolError(PoolError)
+}
+
+fn error_to_string(error) {
+  case error {
+    NotFound -> "Not found"
+    Conflict -> "Conflict"
+    RespError(message) -> "RESP protocol error: " <> message
+    ConnectionError -> "Connection error"
+    Timeout -> "Timeout"
+    TcpError(error) -> "TCP error: " <> string.inspect(error)
+    ServerError(message) -> message
+    PoolError(error) ->
+      "Pool error: "
+      <> case error {
+        NoResourcesAvailable -> "No resources available"
+        PooledResourceCreateError(message) ->
+          "Failed to create resource: " <> message
+      }
+  }
+}
+
+pub type StartError {
+  ActorStartError(actor.StartError)
+  PingError(Error)
 }
 
 fn auth_to_options_list(auth: Auth) -> List(String) {
@@ -206,8 +228,7 @@ fn create_pool_builder(
 ) -> bath.Builder(mug.Socket) {
   bath.new(fn() {
     create_socket(config, init_timeout)
-    // TODO: proper to_string function for errors
-    |> result.map_error(string.inspect)
+    |> result.map_error(error_to_string)
   })
   |> bath.size(pool_size)
   |> bath.on_shutdown(fn(socket) {
@@ -218,18 +239,27 @@ fn create_pool_builder(
 
 /// Start a connection pool for Redis connections.
 ///
+/// This function will `PING` your Redis instance once to ensure it is reachable.
+///
 /// **Note:** Consider using [`supervised_pool`](#supervised_pool) instead, which
 /// provides automatic restart capabilities and better integration with OTP supervision
 /// trees. This function should only be used when you need to manage the pool lifecycle
 /// manually.
 pub fn start_pool(
-  config: Config,
-  pool_size: Int,
-  init_timeout: Int,
-) -> Result(Connection, actor.StartError) {
-  create_pool_builder(config, pool_size, init_timeout)
-  |> bath.start(init_timeout)
-  |> result.map(Pooled)
+  config config: Config,
+  size pool_size: Int,
+  timeout init_timeout: Int,
+) -> Result(Connection, StartError) {
+  use pool <- result.try(
+    create_pool_builder(config, pool_size, init_timeout)
+    |> bath.start(init_timeout)
+    |> result.map(Pooled)
+    |> result.map_error(ActorStartError),
+  )
+
+  ping(pool, option.None, 1000)
+  |> result.replace(pool)
+  |> result.map_error(PingError)
 }
 
 /// Create a supervised connection pool for Redis connections.
@@ -247,10 +277,10 @@ pub fn start_pool(
 /// TODO
 /// ```
 pub fn supervised_pool(
-  config: Config,
-  subj: process.Subject(Connection),
-  pool_size: Int,
-  init_timeout: Int,
+  config config: Config,
+  receiver subj: process.Subject(Connection),
+  size pool_size: Int,
+  timeout init_timeout: Int,
 ) -> supervision.ChildSpecification(process.Subject(bath.Msg(mug.Socket))) {
   create_pool_builder(config, pool_size, init_timeout)
   |> bath.supervised_map(subj, Pooled, init_timeout)
@@ -259,12 +289,12 @@ pub fn supervised_pool(
 /// Shut down a Redis connection or connection pool.
 ///
 /// For single connections, closes the socket immediately.
-/// For pooled connections, gracefully shuts down the pool with a 1 second timeout.
-pub fn shutdown(conn: Connection) -> Result(Nil, Nil) {
+/// For pooled connections, gracefully shuts down the pool with the provided timeout.
+pub fn shutdown(conn: Connection, timeout: Int) -> Result(Nil, Nil) {
   case conn {
     Single(socket) -> mug.shutdown(socket) |> result.replace_error(Nil)
     Pooled(pool) ->
-      bath.shutdown(pool, False, 1000) |> result.replace_error(Nil)
+      bath.shutdown(pool, False, timeout) |> result.replace_error(Nil)
   }
 }
 
@@ -312,7 +342,7 @@ fn do_execute(socket: mug.Socket, command: List(String), timeout: Int) {
     |> result.map_error(TcpError),
   )
 
-  use reply <- result.try(socket_receive(socket, <<>>, now(), timeout))
+  use reply <- result.try(socket_receive(socket, <<>>, monotonic_now(), timeout))
   case reply {
     [resp.SimpleError(error)] | [resp.BulkError(error)] ->
       Error(ServerError(error))
@@ -329,7 +359,7 @@ fn socket_receive(
   case resp.decode_value(storage) {
     Ok(value) -> Ok(value)
     Error(_) -> {
-      case now() - start_time >= timeout * 1_000_000 {
+      case monotonic_now() - start_time >= timeout * 1_000_000 {
         True -> Error(Timeout)
         False ->
           case mug.receive(socket, timeout) {
@@ -347,9 +377,8 @@ fn socket_receive(
   }
 }
 
-// TODO: make sure this is always converted to nanoseconds
-@external(erlang, "erlang", "monotonic_time")
-fn now() -> Int
+@external(erlang, "valkyrie_ffi", "monotonic_now")
+fn monotonic_now() -> Int
 
 // ---------------------------------- //
 // ----- Return value functions ----- //

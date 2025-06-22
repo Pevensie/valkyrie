@@ -1,22 +1,3 @@
-# 🌌 Valkyrie
-
-[![Package Version](https://img.shields.io/hexpm/v/valkyrie)](https://hex.pm/packages/valkyrie)
-[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/valkyrie/)
-
-A Gleam client for Valkey, KeyDB, Redis and other Redis-compatible databases.
-
-## Installation
-
-```sh
-gleam add valkyrie
-```
-
-## Usage
-
-The recommended way to use Valkyrie is by starting a connection pool as part of your
-application's supervision tree.
-
-```gleam
 import gleam/erlang/process
 import gleam/option
 import gleam/otp/static_supervisor as supervisor
@@ -33,7 +14,7 @@ pub fn main() {
     |> valkyrie.supervised_pool(
       receiver: conn_receiver,
       size: 10,
-      timeout: 1000
+      timeout: 1000,
     )
 
   // Start the pool under a supervisor
@@ -46,10 +27,9 @@ pub fn main() {
   let assert Ok(conn) = process.receive(conn_receiver, 1000)
 
   // Use the connection.
-  let assert Ok(_) = valkyrie.set(conn, "key", "value", option.None, 1000)
-  let assert Ok(_) = valkyrie.get(conn, "key", 1000)
+  let assert Ok(_) = echo valkyrie.set(conn, "key", "value", option.None, 1000)
+  let assert Ok(_) = echo valkyrie.get(conn, "key", 1000)
 
   // Close the connection.
   let assert Ok(_) = valkyrie.shutdown(conn, 1000)
 }
-```
