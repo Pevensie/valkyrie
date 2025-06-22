@@ -28,8 +28,12 @@ import valkyrie
 
 pub fn main() {
   // Create a subject to receive the connection once the supervision tree has been
-  // started.
-  let conn_receiver = process.new_subject()
+  // started. Use a named subject to make sure we can always receive the connection,
+  // even if our original process crashes.
+  let conn_receiver_name = process.new_name("valkyrie_conn_receiver")
+  let assert Ok(_) = process.register(process.self(), conn_receiver_name)
+
+  let conn_receiver = process.named_subject(conn_receiver_name)
 
   // Define a pool of 10 connections to the default Redis instance on localhost.
   let valkyrie_child_spec =
@@ -53,8 +57,7 @@ pub fn main() {
   let assert Ok(_) = echo valkyrie.set(conn, "key", "value", option.None, 1000)
   let assert Ok(_) = echo valkyrie.get(conn, "key", 1000)
 
-  // Close the connection.
-  let assert Ok(_) = valkyrie.shutdown(conn, 1000)
+  // Do more stuff...
 }
 ```
 

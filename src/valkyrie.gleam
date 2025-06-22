@@ -293,8 +293,12 @@ pub fn start_pool(
 ///
 /// pub fn main() {
 ///   // Create a subject to receive the connection once the supervision tree has been
-///   // started.
-///   let conn_receiver = process.new_subject()
+///   // started. Use a named subject to make sure we can always receive the connection,
+///   // even if our original process crashes.
+///   let conn_receiver_name = process.new_name("valkyrie_conn_receiver")
+///   let assert Ok(_) = process.register(process.self(), conn_receiver_name)
+///
+///   let conn_receiver = process.named_subject(conn_receiver_name)
 ///
 ///   // Define a pool of 10 connections to the default Redis instance on localhost.
 ///   let valkyrie_child_spec =
@@ -318,8 +322,7 @@ pub fn start_pool(
 ///   let assert Ok(_) = valkyrie.set(conn, "key", "value", option.None, 1000)
 ///   let assert Ok(_) = valkyrie.get(conn, "key", 1000)
 ///
-///   // Close the connection.
-///   let assert Ok(_) = valkyrie.shutdown(conn, 1000)
+///   // Do more stuff...
 /// }
 /// ```
 pub fn supervised_pool(
@@ -336,6 +339,9 @@ pub fn supervised_pool(
 ///
 /// For single connections, closes the socket immediately.
 /// For pooled connections, gracefully shuts down the pool with the provided timeout.
+///
+/// You likely only need to use this function when you're using a single connection.
+/// You should let your supervision tree handle the shutdown of pooled connections.
 pub fn shutdown(conn: Connection, timeout: Int) -> Result(Nil, Nil) {
   case conn {
     Single(socket) -> mug.shutdown(socket) |> result.replace_error(Nil)
