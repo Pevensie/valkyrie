@@ -1,5 +1,5 @@
 name = "valkyrie"
-version = "1.0.0"
+version = "1.0.1"
 
 description = "A Gleam client for Valkey, KeyDB, Redis, Dragonfly and other Redis-compatible databases."
 gleam = ">= 1.11.0"
@@ -17,7 +17,6 @@ gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_stdlib = ">= 0.60.0 and < 2.0.0"
 mug = ">= 2.0.0 and < 3.0.0"
-lifeguard = ">= 3.0.0 and < 4.0.0"
 bath = ">= 4.1.0 and < 5.0.0"
 gleam_time = ">= 1.2.0 and < 2.0.0"
 
