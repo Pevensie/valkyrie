@@ -8,6 +8,7 @@ import gleam/option
 import gleam/otp/static_supervisor
 import gleam/set
 import gleam/string
+import gleam/time/timestamp
 import gleeunit
 import gleeunit/should
 import valkyrie
@@ -258,7 +259,7 @@ pub fn set_with_options_test() {
     )
 
   // Test KEEPTTL option
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn |> valkyrie.expire("test:set:expire", 30, option.None, 1000)
 
   let keep_ttl_options =
@@ -554,20 +555,40 @@ pub fn ping_message_test() {
     conn |> valkyrie.ping(option.Some("Hello Redis"), 1000)
 }
 
-pub fn expire_test() {
+pub fn expire_expiretime_test() {
   use conn <- get_test_conn()
 
   let assert Ok("OK") =
     conn |> valkyrie.set("test:expire", "value", option.None, 1000)
-  let assert Ok(1) =
+
+  bool.guard(when: is_keydb(), return: Nil, otherwise: fn() {
+    let assert Ok(valkyrie.NoExpiration) =
+      conn |> valkyrie.expiretime("test:expire", 1000)
+    Nil
+  })
+
+  let assert Ok(True) =
     conn |> valkyrie.expire("test:expire", 10, option.None, 1000)
+
+  bool.guard(when: is_keydb(), return: Nil, otherwise: fn() {
+    let assert Ok(valkyrie.ExpiresAfter(expire_time)) =
+      conn |> valkyrie.expiretime("test:expire", 1000)
+    { expire_time > 0 } |> should.be_true
+  })
+
   let assert Ok("value") = conn |> valkyrie.get("test:expire", 1000)
 
-  let assert Ok(0) =
+  let assert Ok(True) =
+    conn |> valkyrie.expire("test:expire", -1, option.None, 1000)
+  let assert Error(valkyrie.NotFound) =
+    conn |> valkyrie.get("test:expire", 1000)
+
+  let assert Ok(False) =
     conn |> valkyrie.expire("test:expire:nonexistent", 10, option.None, 1000)
 }
 
 pub fn expire_condition_variations_test() {
+  use <- bool.guard(when: is_keydb(), return: Ok(False))
   use conn <- get_test_conn()
 
   // Set up test keys for IfNoExpiry condition
@@ -575,11 +596,11 @@ pub fn expire_condition_variations_test() {
     conn |> valkyrie.set("test:expire:no_ttl_1", "value", option.None, 1000)
   let assert Ok("OK") =
     conn |> valkyrie.set("test:expire:with_ttl_1", "value", option.None, 1000)
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn |> valkyrie.expire("test:expire:with_ttl_1", 3600, option.None, 1000)
 
   // Test IfNoExpiry condition
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn
     |> valkyrie.expire(
       "test:expire:no_ttl_1",
@@ -587,7 +608,7 @@ pub fn expire_condition_variations_test() {
       option.Some(valkyrie.IfNoExpiry),
       1000,
     )
-  let assert Ok(0) =
+  let assert Ok(False) =
     conn
     |> valkyrie.expire(
       "test:expire:with_ttl_1",
@@ -601,11 +622,11 @@ pub fn expire_condition_variations_test() {
     conn |> valkyrie.set("test:expire:no_ttl_2", "value", option.None, 1000)
   let assert Ok("OK") =
     conn |> valkyrie.set("test:expire:with_ttl_2", "value", option.None, 1000)
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn |> valkyrie.expire("test:expire:with_ttl_2", 3600, option.None, 1000)
 
   // Test IfHasExpiry condition
-  let assert Ok(0) =
+  let assert Ok(False) =
     conn
     |> valkyrie.expire(
       "test:expire:no_ttl_2",
@@ -613,7 +634,7 @@ pub fn expire_condition_variations_test() {
       option.Some(valkyrie.IfHasExpiry),
       1000,
     )
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn
     |> valkyrie.expire(
       "test:expire:with_ttl_2",
@@ -625,11 +646,11 @@ pub fn expire_condition_variations_test() {
   // Set up test key for comparison conditions
   let assert Ok("OK") =
     conn |> valkyrie.set("test:expire:with_ttl_3", "value", option.None, 1000)
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn |> valkyrie.expire("test:expire:with_ttl_3", 3600, option.None, 1000)
 
   // Test IfGreaterThan condition (7200 > 3600, should succeed)
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn
     |> valkyrie.expire(
       "test:expire:with_ttl_3",
@@ -639,7 +660,7 @@ pub fn expire_condition_variations_test() {
     )
 
   // Test IfLessThan condition (30 < 7200, should succeed)
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn
     |> valkyrie.expire(
       "test:expire:with_ttl_3",
@@ -649,18 +670,99 @@ pub fn expire_condition_variations_test() {
     )
 }
 
+pub fn pexpire_pexpiretime_test() {
+  use conn <- get_test_conn()
+
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:pexpire", "value", option.None, 1000)
+
+  bool.guard(when: is_keydb(), return: Nil, otherwise: fn() {
+    let assert Ok(valkyrie.NoExpiration) =
+      conn |> valkyrie.pexpiretime("test:pexpire", 1000)
+    Nil
+  })
+
+  let assert Ok(True) =
+    conn |> valkyrie.pexpire("test:pexpire", 10_000, option.None, 1000)
+
+  bool.guard(when: is_keydb(), return: Nil, otherwise: fn() {
+    let assert Ok(valkyrie.ExpiresAfter(expire_time)) =
+      conn |> valkyrie.pexpiretime("test:pexpire", 1000)
+    { expire_time > 0 } |> should.be_true
+  })
+
+  let assert Ok("value") = conn |> valkyrie.get("test:pexpire", 1000)
+
+  let assert Ok(True) =
+    conn |> valkyrie.pexpire("test:pexpire", -1, option.None, 1000)
+  let assert Error(valkyrie.NotFound) =
+    conn |> valkyrie.get("test:expire", 1000)
+
+  let assert Ok(False) =
+    conn
+    |> valkyrie.pexpire("test:pexpire:nonexistent", 10_000, option.None, 1000)
+}
+
+pub fn expireat_test() {
+  use conn <- get_test_conn()
+
+  let far_future_unix_seconds = 2_000_000_000
+
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:expire", "value", option.None, 1000)
+  let assert Ok(True) =
+    conn
+    |> valkyrie.expireat(
+      "test:expire",
+      timestamp.from_unix_seconds(far_future_unix_seconds),
+      option.None,
+      1000,
+    )
+  let assert Ok("value") = conn |> valkyrie.get("test:expire", 1000)
+
+  // Correctly rounds a fractional number of seconds
+  let assert Ok(True) =
+    conn
+    |> valkyrie.expireat(
+      "test:expire",
+      // 500 milliseconds over above time
+      timestamp.from_unix_seconds_and_nanoseconds(
+        far_future_unix_seconds,
+        500_000_000,
+      ),
+      option.None,
+      1000,
+    )
+
+  // Setting a timestamp in the past deletes the key
+  let assert Ok(True) =
+    conn
+    |> valkyrie.expireat(
+      "test:expire",
+      timestamp.from_unix_seconds(0),
+      option.None,
+      1000,
+    )
+
+  let assert Error(valkyrie.NotFound) =
+    conn |> valkyrie.get("test:expire", 1000)
+
+  let assert Ok(False) =
+    conn |> valkyrie.expire("test:expire:nonexistent", 10, option.None, 1000)
+}
+
 pub fn persist_test() {
   use conn <- get_test_conn()
 
   let assert Ok("OK") =
     conn |> valkyrie.set("test:persist", "value", option.None, 1000)
-  let assert Ok(1) =
+  let assert Ok(True) =
     conn |> valkyrie.expire("test:persist", 10, option.None, 1000)
-  let assert Ok(1) = conn |> valkyrie.persist("test:persist", 1000)
+  let assert Ok(True) = conn |> valkyrie.persist("test:persist", 1000)
 
   let assert Ok("OK") =
     conn |> valkyrie.set("test:persist:no_ttl", "value", option.None, 1000)
-  let assert Ok(0) = conn |> valkyrie.persist("test:persist:no_ttl", 1000)
+  let assert Ok(False) = conn |> valkyrie.persist("test:persist:no_ttl", 1000)
 }
 
 // -------------------------- //

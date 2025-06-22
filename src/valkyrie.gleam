@@ -11,6 +11,7 @@ import gleam/otp/supervision
 import gleam/result
 import gleam/set
 import gleam/string
+import gleam/time/timestamp
 import gleam/uri
 import mug
 
@@ -211,8 +212,13 @@ fn create_socket(config: Config, timeout: Int) -> Result(mug.Socket, Error) {
 
 /// Create a single Redis connection.
 ///
+/// This will attempt to authenticate with Redis using the provided configuration via
+/// the `HELLO 3` command. See the documentation on [`supervised_pool`](#supervised_pool)
+/// for more information on how to use connections in Valkyrie. The API is the same for
+/// using single connections and supervised pools.
+///
 /// This establishes a direct connection to Redis using the provided configuration.
-/// For high-throughput applications, consider using `start_pool()` instead.
+/// For high-throughput applications, consider using [`supervised_pool`](#supervised_pool).
 pub fn create_connection(
   config: Config,
   timeout: Int,
@@ -240,8 +246,10 @@ fn create_pool_builder(
 /// Start a connection pool for Redis connections.
 ///
 /// This function will `PING` your Redis instance once to ensure it is reachable.
+/// Further information about how to use the connection pool can be found in the
+/// documentation for [`supervised_pool`](#supervised_pool).
 ///
-/// **Note:** Consider using [`supervised_pool`](#supervised_pool) instead, which
+/// Consider using [`supervised_pool`](#supervised_pool) instead, which
 /// provides automatic restart capabilities and better integration with OTP supervision
 /// trees. This function should only be used when you need to manage the pool lifecycle
 /// manually.
@@ -268,13 +276,51 @@ pub fn start_pool(
 /// supervision tree. The pool will be automatically restarted if it crashes,
 /// making this the recommended approach for production applications.
 ///
+/// Connections are created lazily when requested from the pool. On creation,
+/// connections will call `HELLO 3` with any authentication information to authenticate
+/// with the Redis-compatible server. No additional commands will be sent.
+///
 /// The [`Connection`](#Connection) value will be sent to the provided subject
 /// when the pool is started.
 ///
 /// ## Example
 ///
 /// ```gleam
-/// TODO
+/// import gleam/erlang/process
+/// import gleam/option
+/// import gleam/otp/static_supervisor as supervisor
+/// import valkyrie
+///
+/// pub fn main() {
+///   // Create a subject to receive the connection once the supervision tree has been
+///   // started.
+///   let conn_receiver = process.new_subject()
+///
+///   // Define a pool of 10 connections to the default Redis instance on localhost.
+///   let valkyrie_child_spec =
+///     valkyrie.default_config()
+///     |> valkyrie.supervised_pool(
+///       receiver: conn_receiver,
+///       size: 10,
+///       timeout: 1000
+///     )
+///
+///   // Start the pool under a supervisor
+///   let assert Ok(_started) =
+///     supervisor.new(supervisor.OneForOne)
+///     |> supervisor.add(valkyrie_child_spec)
+///     |> supervisor.start
+///
+///   // Receive the connection now that the pool is started
+///   let assert Ok(conn) = process.receive(conn_receiver, 1000)
+///
+///   // Use the connection.
+///   let assert Ok(_) = valkyrie.set(conn, "key", "value", option.None, 1000)
+///   let assert Ok(_) = valkyrie.get(conn, "key", 1000)
+///
+///   // Close the connection.
+///   let assert Ok(_) = valkyrie.shutdown(conn, 1000)
+/// }
 /// ```
 pub fn supervised_pool(
   config config: Config,
@@ -1181,10 +1227,10 @@ pub fn persist(
   conn: Connection,
   key: String,
   timeout: Int,
-) -> Result(Int, Error) {
+) -> Result(Bool, Error) {
   ["PERSIST", key]
   |> execute(conn, _, timeout)
-  |> result.try(expect_integer)
+  |> result.try(expect_integer_boolean)
 }
 
 /// Ping the Redis server.
@@ -1225,10 +1271,14 @@ pub type ExpireCondition {
   IfLessThan
 }
 
-/// Set a timeout on a key.
+/// Set a TTL in seconds on a key, relative to the current time.
 ///
-/// The timeout is specified in seconds. Returns 1 if the timeout was set,
-/// 0 if the key doesn't exist or the condition wasn't met.
+/// Returns `True` if the timeout was set, `False` if the key doesn't exist or the
+/// condition wasn't met.
+///
+/// **Note:** KeyDB does not support the `EXPIRE` command's conditional behaviour.
+/// Make sure to pass `option.None` if to the `condition` argument if you're using
+/// KeyDB.
 ///
 /// See the [Redis EXPIRE documentation](https://redis.io/commands/expire) for more details.
 pub fn expire(
@@ -1237,7 +1287,7 @@ pub fn expire(
   ttl: Int,
   condition: option.Option(ExpireCondition),
   timeout: Int,
-) -> Result(Int, Error) {
+) -> Result(Bool, Error) {
   let expiry_condition = case condition {
     option.Some(IfNoExpiry) -> ["NX"]
     option.Some(IfHasExpiry) -> ["XX"]
@@ -1248,7 +1298,133 @@ pub fn expire(
 
   ["EXPIRE", key, int.to_string(ttl), ..expiry_condition]
   |> execute(conn, _, timeout)
+  |> result.try(expect_integer_boolean)
+}
+
+/// Set a TTL in milliseconds on a key, relative to the current time.
+///
+/// Returns `True` if the timeout was set, `False` if the key doesn't exist or the
+/// condition wasn't met.
+///
+/// **Note:** KeyDB does not support the `PEXPIRE` command's conditional behaviour.
+/// Make sure to pass `option.None` if to the `condition` argument if you're using
+/// KeyDB.
+///
+/// See the [Redis PEXPIRE documentation](https://redis.io/commands/pexpire) for more details.
+pub fn pexpire(
+  conn: Connection,
+  key: String,
+  ttl: Int,
+  condition: option.Option(ExpireCondition),
+  timeout: Int,
+) -> Result(Bool, Error) {
+  let expiry_condition = case condition {
+    option.Some(IfNoExpiry) -> ["NX"]
+    option.Some(IfHasExpiry) -> ["XX"]
+    option.Some(IfGreaterThan) -> ["GT"]
+    option.Some(IfLessThan) -> ["LT"]
+    option.None -> []
+  }
+
+  ["PEXPIRE", key, int.to_string(ttl), ..expiry_condition]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer_boolean)
+}
+
+/// Set an absolute expiry on a key.
+///
+/// The expiry is specified as a Unix timestamp. If the timeout is in the past, the
+/// key will be deleted immediately. Returns `True` if the timeout was set, `False` if
+/// the key doesn't exist or the condition wasn't met.
+///
+/// **Note:** KeyDB does not support the `EXPIREAT` command's conditional behaviour.
+/// Make sure to pass `option.None` if to the `condition` argument if you're using
+/// KeyDB.
+///
+/// See the [Redis EXPIREAT documentation](https://redis.io/commands/expireat) for more details.
+pub fn expireat(
+  conn: Connection,
+  key: String,
+  timestamp: timestamp.Timestamp,
+  condition: option.Option(ExpireCondition),
+  timeout: Int,
+) -> Result(Bool, Error) {
+  let expiry_condition = case condition {
+    option.Some(IfNoExpiry) -> ["NX"]
+    option.Some(IfHasExpiry) -> ["XX"]
+    option.Some(IfGreaterThan) -> ["GT"]
+    option.Some(IfLessThan) -> ["LT"]
+    option.None -> []
+  }
+
+  [
+    "EXPIREAT",
+    key,
+    timestamp
+      |> timestamp.to_unix_seconds
+      |> float.round
+      |> int.to_string,
+    ..expiry_condition
+  ]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer_boolean)
+}
+
+pub type Expiration {
+  ExpiresAfter(Int)
+  NoExpiration
+}
+
+/// Returns the absolute Unix timestamp (since January 1, 1970) in seconds at which the
+/// given key will expire.
+///
+/// Will return `Ok(NoExpiration)` if the key has no associated expiration, or
+/// `Error(NotFound)` if the key does not exist.
+///
+/// **Note:** KeyDB does not support the `EXPIRETIME` command.
+///
+/// See the [Redis EXPIRETIME documentation](https://redis.io/commands/expiretime) for more details.
+pub fn expiretime(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+) -> Result(Expiration, Error) {
+  ["EXPIRETIME", key]
+  |> execute(conn, _, timeout)
   |> result.try(expect_integer)
+  |> result.try(fn(value) {
+    case value {
+      -2 -> Error(NotFound)
+      -1 -> Ok(NoExpiration)
+      _ -> Ok(ExpiresAfter(value))
+    }
+  })
+}
+
+/// Returns the absolute Unix timestamp (since January 1, 1970) in milliseconds at
+/// which the given key will expire.
+///
+/// Will return `Ok(NoExpiration)` if the key has no associated expiration, or
+/// `Error(NotFound)` if the key does not exist.
+///
+/// **Note:** KeyDB does not support the `PEXPIRETIME` command.
+///
+/// See the [Redis PEXPIRETIME documentation](https://redis.io/commands/pexpiretime) for more details.
+pub fn pexpiretime(
+  conn: Connection,
+  key: String,
+  timeout: Int,
+) -> Result(Expiration, Error) {
+  ["PEXPIRETIME", key]
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+  |> result.try(fn(value) {
+    case value {
+      -2 -> Error(NotFound)
+      -1 -> Ok(NoExpiration)
+      _ -> Ok(ExpiresAfter(value))
+    }
+  })
 }
 
 // -------------------------- //
