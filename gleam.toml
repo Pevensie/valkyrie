@@ -3,12 +3,12 @@ version = "1.0.0-rc1"
 
 description = "A Gleam client for Valkey, KeyDB, Redis and other tools with compatible APIs."
 gleam = ">= 1.11.0"
-licences = ["Apache-2.0"]
+licences = ["MIT"]
 links = [
-    { title = "Gleam", href = "https://gleam.run" },
+    { title = "Valkey", href = "https://valkey.io" },
     { title = "KeyDB", href = "https://keydb.dev" },
-    { title = "Valkey", href = "https://github.com/valkey-io/valkey" },
     { title = "Redis", href = "https://redis.io" },
+    { title = "Dragonfly", href = "https://dragonflydb.io/" },
 ]
 repository = { type = "github", user = "Pevensie", repo = "valkyrie" }
 
