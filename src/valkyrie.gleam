@@ -20,7 +20,7 @@ import valkyrie/resp
 
 const protocol_version = 3
 
-/// The configuration for a pool of connections to the database.
+/// The configuration for connecting to a Redis-compatible database.
 pub type Config {
   Config(host: String, port: Int, auth: Auth)
 }
@@ -424,6 +424,38 @@ fn expect_cursor_and_sorted_set_member_array(
   }
 }
 
+fn expect_cursor_and_hash_field_array(
+  values: List(resp.Value),
+) -> Result(#(List(#(String, String)), Int), Error) {
+  case values {
+    [resp.Array([resp.BulkString(new_cursor_str), resp.Array(members)])] -> {
+      use new_cursor <- result.try(expect_cursor(new_cursor_str))
+      use array <- result.try(
+        members
+        |> list.sized_chunk(2)
+        |> list.try_map(fn(item) {
+          case item {
+            [resp.BulkString(field), resp.BulkString(value)] ->
+              Ok(#(field, value))
+            _ ->
+              Error(
+                RespError(resp.error_string(
+                  expected: "member and score",
+                  got: item,
+                )),
+              )
+          }
+        }),
+      )
+      Ok(#(array, new_cursor))
+    }
+    _ ->
+      Error(
+        RespError(resp.error_string(expected: "cursor and array", got: values)),
+      )
+  }
+}
+
 fn expect_integer(value: List(resp.Value)) -> Result(Int, Error) {
   case value {
     [resp.Integer(n)] -> Ok(n)
@@ -747,6 +779,8 @@ pub fn keys(
 ///
 /// Returns a tuple of `#(keys, next_cursor)`. Use the returned cursor
 /// for subsequent calls. A cursor of 0 indicates the end of iteration.
+///
+/// You can provide optional pattern or key type filters to limit the keys returned.
 ///
 /// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
 pub fn scan(
@@ -1285,10 +1319,9 @@ pub fn lrange(
   |> result.try(expect_bulk_string_array)
 }
 
-/// Remove and return an element from the left (head) of a list.
+/// Remove and return elements from the left (head) of a list.
 ///
 /// Returns `Error(NotFound)` if the key doesn't exist or the list is empty.
-/// This version removes exactly one element.
 ///
 /// See the [Redis LPOP documentation](https://redis.io/commands/lpop) for more details.
 pub fn lpop(
@@ -1313,10 +1346,9 @@ pub fn lpop(
   })
 }
 
-/// Remove and return an element from the right (tail) of a list.
+/// Remove and return elements from the right (tail) of a list.
 ///
 /// Returns `Error(NotFound)` if the key doesn't exist or the list is empty.
-/// This version removes exactly one element.
 ///
 /// See the [Redis RPOP documentation](https://redis.io/commands/rpop) for more details.
 pub fn rpop(
@@ -1429,6 +1461,12 @@ pub fn linsert(
 // ----- Set functions ----- //
 // ------------------------- //
 
+/// Add one or more members to a set.
+///
+/// Creates the set if it doesn't exist. Returns the number of members that were
+/// actually added to the set (not including members that were already present).
+///
+/// See the [Redis SADD documentation](https://redis.io/commands/sadd) for more details.
 pub fn sadd(
   conn: Connection,
   key: String,
@@ -1440,12 +1478,23 @@ pub fn sadd(
   |> result.try(expect_integer)
 }
 
+/// Get the number of members in a set.
+///
+/// Returns 0 if the key doesn't exist.
+///
+/// See the [Redis SCARD documentation](https://redis.io/commands/scard) for more details.
 pub fn scard(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
   ["SCARD", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
+/// Check if a value is a member of a set.
+///
+/// Returns `True` if the value is a member of the set, `False` otherwise.
+/// Returns `False` if the key doesn't exist.
+///
+/// See the [Redis SISMEMBER documentation](https://redis.io/commands/sismember) for more details.
 pub fn sismember(
   conn: Connection,
   key: String,
@@ -1457,6 +1506,14 @@ pub fn sismember(
   |> result.try(expect_integer_boolean)
 }
 
+/// Get all members of a set.
+///
+/// Returns an empty set if the key doesn't exist.
+///
+/// **Warning:** This command can be slow on large sets. Consider using
+/// `sscan()` for production use with large sets.
+///
+/// See the [Redis SMEMBERS documentation](https://redis.io/commands/smembers) for more details.
 pub fn smembers(
   conn: Connection,
   key: String,
@@ -1467,6 +1524,15 @@ pub fn smembers(
   |> result.try(expect_bulk_string_set)
 }
 
+/// Iterate incrementally over members of a set.
+///
+/// Returns a tuple of `#(members, next_cursor)`. Use the returned cursor
+/// for subsequent calls. A cursor of 0 indicates the end of iteration.
+///
+/// This is the recommended way to iterate over large sets in production
+/// environments as it doesn't block the server like `smembers()`.
+///
+/// See the [Redis SSCAN documentation](https://redis.io/commands/sscan) for more details.
 pub fn sscan(
   conn: Connection,
   key: String,
@@ -1534,6 +1600,23 @@ pub type ZAddCondition {
   IfScoreGreaterThanExisting
 }
 
+/// Add one or more members with scores to a sorted set.
+///
+/// Creates the sorted set if it doesn't exist. The return value depends on the
+/// `return_changed` parameter:
+/// - If `False`: returns the number of new members added
+/// - If `True`: returns the number of members added or updated
+///
+/// The `condition` parameter controls when the operation should proceed:
+/// - `IfNotExistsInSet`: Only add new members (like NX option)
+/// - `IfExistsInSet`: Only update existing members (like XX option)
+/// - `IfScoreLessThanExisting`: Only update if new score is less than existing
+/// - `IfScoreGreaterThanExisting`: Only update if new score is greater than existing
+///
+/// Returns `Error(Conflict)` if the operation was aborted due to a conflict with one
+/// of the options.
+///
+/// See the [Redis ZADD documentation](https://redis.io/commands/zadd) for more details.
 pub fn zadd(
   conn: Connection,
   key: String,
@@ -1573,6 +1656,12 @@ pub fn zadd(
   })
 }
 
+/// Increment the score of a member in a sorted set.
+///
+/// If the member doesn't exist, it's added with the given score as its initial value.
+/// Returns the new score of the member after incrementing.
+///
+/// See the [Redis ZINCRBY documentation](https://redis.io/commands/zincrby) for more details.
 pub fn zincrby(
   conn: Connection,
   key: String,
@@ -1585,12 +1674,23 @@ pub fn zincrby(
   |> result.try(expect_float)
 }
 
+/// Get the number of members in a sorted set.
+///
+/// Returns 0 if the key doesn't exist.
+///
+/// See the [Redis ZCARD documentation](https://redis.io/commands/zcard) for more details.
 pub fn zcard(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
   ["ZCARD", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
+/// Count the members in a sorted set within a score range.
+///
+/// Both `min` and `max` scores are inclusive by default. Use `Score` variants
+/// to specify infinity bounds for open-ended ranges.
+///
+/// See the [Redis ZCOUNT documentation](https://redis.io/commands/zcount) for more details.
 pub fn zcount(
   conn: Connection,
   key: String,
@@ -1603,6 +1703,11 @@ pub fn zcount(
   |> result.try(expect_integer)
 }
 
+/// Get the score of a member in a sorted set.
+///
+/// Returns `Error(NotFound)` if the key doesn't exist or the member is not in the set.
+///
+/// See the [Redis ZSCORE documentation](https://redis.io/commands/zscore) for more details.
 pub fn zscore(
   conn: Connection,
   key: String,
@@ -1614,6 +1719,15 @@ pub fn zscore(
   |> result.try(expect_nullable_float)
 }
 
+/// Iterate incrementally over members and scores of a sorted set.
+///
+/// Returns a tuple of `#(members_with_scores, next_cursor)`. Use the returned cursor
+/// for subsequent calls. A cursor of 0 indicates the end of iteration.
+///
+/// This is the recommended way to iterate over large sorted sets in production
+/// environments.
+///
+/// See the [Redis ZSCAN documentation](https://redis.io/commands/zscan) for more details.
 pub fn zscan(
   conn: Connection,
   key: String,
@@ -1632,6 +1746,12 @@ pub fn zscan(
   |> result.try(expect_cursor_and_sorted_set_member_array)
 }
 
+/// Remove one or more members from a sorted set.
+///
+/// Returns the number of members that were actually removed from the set
+/// (not including members that were not present).
+///
+/// See the [Redis ZREM documentation](https://redis.io/commands/zrem) for more details.
 pub fn zrem(
   conn: Connection,
   key: String,
@@ -1643,6 +1763,12 @@ pub fn zrem(
   |> result.try(expect_integer)
 }
 
+/// Return random members from a sorted set with their scores.
+///
+/// Returns up to `count` random members. The members are returned with their scores.
+/// If the sorted set is smaller than `count`, all members are returned.
+///
+/// See the [Redis ZRANDMEMBER documentation](https://redis.io/commands/zrandmember) for more details.
 pub fn zrandmember(
   conn: Connection,
   key: String,
@@ -1654,6 +1780,12 @@ pub fn zrandmember(
   |> result.try(expect_sorted_set_member_array)
 }
 
+/// Remove and return members with the lowest scores from a sorted set.
+///
+/// Returns up to `count` members with the lowest scores. The members are removed
+/// from the sorted set and returned with their scores.
+///
+/// See the [Redis ZPOPMIN documentation](https://redis.io/commands/zpopmin) for more details.
 pub fn zpopmin(
   conn: Connection,
   key: String,
@@ -1665,6 +1797,12 @@ pub fn zpopmin(
   |> result.try(expect_sorted_set_member_array)
 }
 
+/// Remove and return members with the highest scores from a sorted set.
+///
+/// Returns up to `count` members with the highest scores. The members are removed
+/// from the sorted set and returned with their scores.
+///
+/// See the [Redis ZPOPMAX documentation](https://redis.io/commands/zpopmax) for more details.
 pub fn zpopmax(
   conn: Connection,
   key: String,
@@ -1691,6 +1829,15 @@ fn numeric_bound_to_string(
   }
 }
 
+/// Get a range of members from a sorted set by rank (index).
+///
+/// Returns members with their scores in the specified rank range.
+/// Ranks are 0-based, with 0 being the member with the lowest score.
+/// Use `NumericBound` to specify inclusive or exclusive bounds.
+///
+/// If `reverse` is `True`, returns members in descending score order.
+///
+/// See the [Redis ZRANGE documentation](https://redis.io/commands/zrange) for more details.
 pub fn zrange(
   conn: Connection,
   key: String,
@@ -1714,6 +1861,15 @@ pub fn zrange(
   |> result.try(expect_sorted_set_member_array)
 }
 
+/// Get a range of members from a sorted set by score.
+///
+/// Returns all members with scores within the specified score range.
+/// Use `NumericBound` with `Score` values to specify inclusive or exclusive bounds,
+/// including infinity bounds for open-ended ranges.
+///
+/// If `reverse` is `True`, returns members in descending score order.
+///
+/// See the [Redis ZRANGE documentation](https://redis.io/commands/zrange) for more details.
 pub fn zrange_byscore(
   conn: Connection,
   key: String,
@@ -1755,6 +1911,16 @@ fn lex_bound_to_string(bound: LexBound) -> String {
   }
 }
 
+/// Get a range of members from a sorted set by lexicographic order.
+///
+/// When all members have the same score, this command returns members
+/// within the specified lexicographic range. Use `LexBound` to specify
+/// inclusive/exclusive bounds or infinity bounds.
+///
+/// If `reverse` is `True`, returns members in reverse lexicographic order.
+/// Note: This only works correctly when all members have the same score.
+///
+/// See the [Redis ZRANGE documentation](https://redis.io/commands/zrange) for more details.
 pub fn zrange_bylex(
   conn: Connection,
   key: String,
@@ -1780,6 +1946,12 @@ pub fn zrange_bylex(
   |> result.try(expect_bulk_string_array)
 }
 
+/// Get the rank (index) of a member in a sorted set.
+///
+/// Returns the 0-based rank of the member, where 0 is the member with the lowest score.
+/// Returns `Error(NotFound)` if the key doesn't exist or the member is not in the set.
+///
+/// See the [Redis ZRANK documentation](https://redis.io/commands/zrank) for more details.
 pub fn zrank(
   conn: Connection,
   key: String,
@@ -1791,7 +1963,14 @@ pub fn zrank(
   |> result.try(expect_nullable_integer)
 }
 
-// Note: not supported by keydb
+/// Get the rank (index) and score of a member in a sorted set.
+///
+/// Returns a tuple of `#(rank, score)` where rank is 0-based (lowest score = 0).
+/// Returns `Error(NotFound)` if the key doesn't exist or the member is not in the set.
+///
+/// **Note:** This command is not supported by KeyDB.
+///
+/// See the [Redis ZRANK documentation](https://redis.io/commands/zrank) for more details.
 pub fn zrank_withscore(
   conn: Connection,
   key: String,
@@ -1803,6 +1982,13 @@ pub fn zrank_withscore(
   |> result.try(expect_nullable_rank_and_score)
 }
 
+/// Get the reverse rank (index) of a member in a sorted set.
+///
+/// Returns the 0-based rank of the member in descending order, where 0 is the member
+/// with the highest score. Returns `Error(NotFound)` if the key doesn't exist or
+/// the member is not in the set.
+///
+/// See the [Redis ZREVRANK documentation](https://redis.io/commands/zrevrank) for more details.
 pub fn zrevrank(
   conn: Connection,
   key: String,
@@ -1814,7 +2000,15 @@ pub fn zrevrank(
   |> result.try(expect_nullable_integer)
 }
 
-// Note: not supported by keydb
+/// Get the reverse rank (index) and score of a member in a sorted set.
+///
+/// Returns a tuple of `#(reverse_rank, score)` where reverse rank is 0-based in
+/// descending order (highest score = 0). Returns `Error(NotFound)` if the key
+/// doesn't exist or the member is not in the set.
+///
+/// **Note:** This command is not supported by KeyDB.
+///
+/// See the [Redis ZREVRANK documentation](https://redis.io/commands/zrevrank) for more details.
 pub fn zrevrank_withscore(
   conn: Connection,
   key: String,
@@ -1830,6 +2024,12 @@ pub fn zrevrank_withscore(
 // ----- Hash functions ----- //
 // -------------------------- //
 
+/// Set field-value pairs in a hash.
+///
+/// Creates the hash if it doesn't exist. Returns the number of fields that were
+/// added (not including fields that were updated with new values).
+///
+/// See the [Redis HSET documentation](https://redis.io/commands/hset) for more details.
 pub fn hset(
   conn: Connection,
   key: String,
@@ -1846,6 +2046,12 @@ pub fn hset(
   |> result.try(expect_integer)
 }
 
+/// Set a field in a hash, only if the field doesn't already exist.
+///
+/// Returns `True` if the field was set, `False` if the field already exists.
+/// Creates the hash if it doesn't exist.
+///
+/// See the [Redis HSETNX documentation](https://redis.io/commands/hsetnx) for more details.
 pub fn hsetnx(
   conn: Connection,
   key: String,
@@ -1858,12 +2064,22 @@ pub fn hsetnx(
   |> result.try(expect_integer_boolean)
 }
 
-pub fn hlen(conn, key, timeout) {
+/// Get the number of fields in a hash.
+///
+/// Returns 0 if the key doesn't exist.
+///
+/// See the [Redis HLEN documentation](https://redis.io/commands/hlen) for more details.
+pub fn hlen(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
   ["HLEN", key]
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
 
+/// Get all field names in a hash.
+///
+/// Returns an empty list if the key doesn't exist.
+///
+/// See the [Redis HKEYS documentation](https://redis.io/commands/hkeys) for more details.
 pub fn hkeys(
   conn: Connection,
   key: String,
@@ -1874,6 +2090,11 @@ pub fn hkeys(
   |> result.try(expect_bulk_string_array)
 }
 
+/// Get the value of a field in a hash.
+///
+/// Returns `Error(NotFound)` if the key doesn't exist or the field doesn't exist.
+///
+/// See the [Redis HGET documentation](https://redis.io/commands/hget) for more details.
 pub fn hget(
   conn: Connection,
   key: String,
@@ -1885,6 +2106,13 @@ pub fn hget(
   |> result.try(expect_nullable_bulk_string)
 }
 
+/// Get all field-value pairs in a hash.
+///
+/// Returns an empty dictionary if the key doesn't exist.
+///
+/// **Note:** The return type uses raw `resp.Value` types. This may change in future versions.
+///
+/// See the [Redis HGETALL documentation](https://redis.io/commands/hgetall) for more details.
 pub fn hgetall(
   conn: Connection,
   key: String,
@@ -1896,6 +2124,12 @@ pub fn hgetall(
   |> result.try(expect_map)
 }
 
+/// Get the values of multiple fields in a hash.
+///
+/// Returns a list of `Result(String, Error)` values. The value will be
+/// `Error(NotFound)` if the field doesn't exist.
+///
+/// See the [Redis HMGET documentation](https://redis.io/commands/hmget) for more details.
 pub fn hmget(
   conn: Connection,
   key: String,
@@ -1907,6 +2141,11 @@ pub fn hmget(
   |> result.try(expect_nullable_bulk_string_array)
 }
 
+/// Get the string length of a field's value in a hash.
+///
+/// Returns 0 if the key doesn't exist or the field doesn't exist.
+///
+/// See the [Redis HSTRLEN documentation](https://redis.io/commands/hstrlen) for more details.
 pub fn hstrlen(
   conn: Connection,
   key: String,
@@ -1918,6 +2157,11 @@ pub fn hstrlen(
   |> result.try(expect_integer)
 }
 
+/// Get all values in a hash.
+///
+/// Returns an empty list if the key doesn't exist.
+///
+/// See the [Redis HVALS documentation](https://redis.io/commands/hvals) for more details.
 pub fn hvals(
   conn: Connection,
   key: String,
@@ -1928,6 +2172,12 @@ pub fn hvals(
   |> result.try(expect_bulk_string_array)
 }
 
+/// Delete one or more fields from a hash.
+///
+/// Returns the number of fields that were actually removed from the hash
+/// (not including fields that didn't exist).
+///
+/// See the [Redis HDEL documentation](https://redis.io/commands/hdel) for more details.
 pub fn hdel(
   conn: Connection,
   key: String,
@@ -1939,6 +2189,12 @@ pub fn hdel(
   |> result.try(expect_integer)
 }
 
+/// Check if a field exists in a hash.
+///
+/// Returns `True` if the field exists, `False` otherwise.
+/// Returns `False` if the key doesn't exist.
+///
+/// See the [Redis HEXISTS documentation](https://redis.io/commands/hexists) for more details.
 pub fn hexists(
   conn: Connection,
   key: String,
@@ -1950,6 +2206,12 @@ pub fn hexists(
   |> result.try(expect_integer_boolean)
 }
 
+/// Increment the integer value of a field in a hash by the given amount.
+///
+/// If the field doesn't exist, it's set to 0 before incrementing.
+/// Creates the hash if it doesn't exist. Returns the new value after incrementing.
+///
+/// See the [Redis HINCRBY documentation](https://redis.io/commands/hincrby) for more details.
 pub fn hincrby(
   conn: Connection,
   key: String,
@@ -1962,12 +2224,33 @@ pub fn hincrby(
   |> result.try(expect_integer)
 }
 
-pub fn hincrbyfloat(conn, key, field, value, timeout) {
+/// Increment the floating point value of a field in a hash by the given amount.
+///
+/// If the field doesn't exist, it's set to 0 before incrementing.
+/// Creates the hash if it doesn't exist. Returns the new value after incrementing.
+///
+/// See the [Redis HINCRBYFLOAT documentation](https://redis.io/commands/hincrbyfloat) for more details.
+pub fn hincrbyfloat(
+  conn: Connection,
+  key: String,
+  field: String,
+  value: Float,
+  timeout: Int,
+) -> Result(Float, Error) {
   ["HINCRBYFLOAT", key, field, float.to_string(value)]
   |> execute(conn, _, timeout)
   |> result.try(expect_float)
 }
 
+/// Iterate incrementally over field-value pairs in a hash.
+///
+/// Returns a tuple of `#(field_value_pairs, next_cursor)`. Use the returned cursor
+/// for subsequent calls. A cursor of 0 indicates the end of iteration.
+///
+/// This is the recommended way to iterate over large hashes in production
+/// environments.
+///
+/// See the [Redis HSCAN documentation](https://redis.io/commands/hscan) for more details.
 pub fn hscan(
   conn: Connection,
   key: String,
@@ -1975,12 +2258,12 @@ pub fn hscan(
   pattern_filter: option.Option(String),
   count: Int,
   timeout: Int,
-) -> Result(#(List(String), Int), Error) {
+) -> Result(#(List(#(String, String)), Int), Error) {
   let modifiers = case pattern_filter {
     option.Some(pattern) -> ["MATCH", pattern, "COUNT", int.to_string(count)]
     option.None -> ["COUNT", int.to_string(count)]
   }
   ["HSCAN", key, int.to_string(cursor), ..modifiers]
   |> execute(conn, _, timeout)
-  |> result.try(expect_cursor_and_array)
+  |> result.try(expect_cursor_and_hash_field_array)
 }
