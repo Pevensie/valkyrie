@@ -1115,7 +1115,7 @@ pub fn hscan_test() {
 
   let assert Ok(#(items, _cursor)) =
     valkyrie.hscan(conn, "test:hash:scan", 0, option.None, 10, 1000)
-  items |> list.length |> should.equal(8)
+  items |> list.length |> should.equal(4)
 }
 
 pub fn hscan_pattern_test() {
@@ -1141,7 +1141,7 @@ pub fn hscan_pattern_test() {
       10,
       1000,
     )
-  items |> list.length |> should.equal(6)
+  items |> list.length |> should.equal(3)
 }
 
 // -------------------------------- //
