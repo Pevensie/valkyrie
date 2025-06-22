@@ -340,8 +340,9 @@ pub fn supervised_pool(
 /// For single connections, closes the socket immediately.
 /// For pooled connections, gracefully shuts down the pool with the provided timeout.
 ///
-/// You likely only need to use this function when you're using a single connection.
-/// You should let your supervision tree handle the shutdown of pooled connections.
+/// You likely only need to use this function when you're using a single connection or
+/// an unsupervised pool. You should let your supervision tree handle the shutdown of
+/// supervised connection pools.
 pub fn shutdown(conn: Connection, timeout: Int) -> Result(Nil, Nil) {
   case conn {
     Single(socket) -> mug.shutdown(socket) |> result.replace_error(Nil)
