@@ -5,18 +5,6 @@
 
 A Gleam client for Valkey, KeyDB, Redis, Dragonfly and other Redis-compatible databases.
 
-## Why use Valkyrie?
-
-Unlike other Redis libraries in the BEAM ecosystem, Valkyrie does not use actors or
-gen servers to manage connections. Instead, Valkyrie maintains a pool of TCP connections
-to the Redis-compatible database, and uses those directly to execute commands.
-
-This reduces the overhead of using the library, and prevents unnecessary copying of data
-between the connection process and the calling process.
-
-This means Valkyrie should be significantly faster than alternatives, especially when
-sending or receiving large amounts of data.
-
 ## Installation
 
 ```sh
@@ -79,6 +67,41 @@ docker compose --profile valkey up -d
 # You can also use profiles 'redis', 'keydb' or 'dragonfly'
 gleam run -m valkyrie/example
 ```
+
+## Why use Valkyrie?
+
+### Performance
+
+Unlike other Redis libraries in the BEAM ecosystem, Valkyrie does not use actors or
+gen servers to manage connections. Instead, Valkyrie maintains a pool of TCP connections
+to the Redis-compatible database, and uses those directly to execute commands.
+
+This reduces the overhead of using the library, and prevents unnecessary copying of data
+between the connection process and the calling process.
+
+This means Valkyrie should be significantly faster than alternatives, especially when
+sending or receiving large amounts of data.
+
+### Compatibility
+
+Valkyrie tries to adhere to the Redis command APIs as much as possible, with some minor
+changes to make working with Redis-compatible databases a more idiomatic Gleam
+experience (e.g. replacing an integer boolean with an actual boolean).
+
+Where possible, Valkyrie uses Gleam's type system to ensure you can't pass invalid
+arguments or combinations of arguments that would result in an error, while
+remaining as close to the spec as possible.
+
+Commands are generally named after their Redis counterparts, with some minor
+additions where adding a specific keyword changes the input or output type of
+the command.
+
+All Valkyrie functions are tested against:
+
+- [Redis](https://redis.io/) versions 7 and 8
+- [Valkey](https://valkey.io/) versions 7 and 8
+- [KeyDB](https://www.keydb.dev/) latest
+- [Dragonfly](https://dragonflydb.io/) latest
 
 ## Development
 
