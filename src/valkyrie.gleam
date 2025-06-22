@@ -118,14 +118,6 @@ pub type UrlParseError {
 /// // Password-only authentication
 /// let assert Ok(config) = url_config("redis://:mypassword@localhost:6379")
 /// // Config(host: "localhost", port: 6379, auth: PasswordOnly("mypassword"))
-///
-/// // Different protocols
-/// let assert Ok(config) = url_config("valkey://192.168.1.100:6380")
-/// // Config(host: "192.168.1.100", port: 6380, auth: NoAuth)
-///
-/// // Error handling
-/// let assert Error(UnsupportedScheme) = url_config("http://localhost")
-/// let assert Error(MissingHost) = url_config("redis:")
 /// ```
 pub fn url_config(url: String) -> Result(Config, UrlParseError) {
   use parsed_uri <- result.try(
@@ -713,8 +705,8 @@ pub type KeyType {
 fn key_type_to_string(key_type: KeyType) {
   case key_type {
     Set -> "set"
-    List -> "list"
     ZSet -> "zset"
+    List -> "list"
     Hash -> "hash"
     String -> "string"
     Stream -> "stream"
@@ -760,88 +752,21 @@ pub fn keys(
 pub fn scan(
   conn: Connection,
   cursor: Int,
+  pattern_filter: option.Option(String),
   count: Int,
+  key_type_filter: option.Option(KeyType),
   timeout: Int,
 ) -> Result(#(List(String), Int), Error) {
-  ["SCAN", int.to_string(cursor), "COUNT", int.to_string(count)]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_cursor_and_array)
-}
-
-/// Iterate incrementally over keys matching a pattern.
-///
-/// Like `scan()` but only returns keys that match the given pattern.
-/// Returns a tuple of `#(keys, next_cursor)`.
-///
-/// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
-pub fn scan_pattern(
-  conn: Connection,
-  cursor: Int,
-  pattern: String,
-  count: Int,
-  timeout: Int,
-) -> Result(#(List(String), Int), Error) {
-  [
-    "SCAN",
-    int.to_string(cursor),
-    "MATCH",
-    pattern,
-    "COUNT",
-    int.to_string(count),
-  ]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_cursor_and_array)
-}
-
-/// Iterate incrementally over keys of a specific type.
-///
-/// Like `scan()` but only returns keys of the specified type.
-/// Returns a tuple of `#(keys, next_cursor)`.
-///
-/// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
-pub fn scan_with_type(
-  conn: Connection,
-  cursor: Int,
-  key_type: KeyType,
-  count: Int,
-  timeout: Int,
-) -> Result(#(List(String), Int), Error) {
-  [
-    "SCAN",
-    int.to_string(cursor),
-    "COUNT",
-    int.to_string(count),
-    "TYPE",
-    key_type_to_string(key_type),
-  ]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_cursor_and_array)
-}
-
-/// Iterate incrementally over keys matching a pattern and type.
-///
-/// Combines pattern matching and type filtering in a single scan operation.
-/// Returns a tuple of `#(keys, next_cursor)`.
-///
-/// See the [Redis SCAN documentation](https://redis.io/commands/scan) for more details.
-pub fn scan_pattern_with_type(
-  conn: Connection,
-  cursor: Int,
-  key_type: KeyType,
-  pattern: String,
-  count: Int,
-  timeout: Int,
-) -> Result(#(List(String), Int), Error) {
-  [
-    "SCAN",
-    int.to_string(cursor),
-    "MATCH",
-    pattern,
-    "COUNT",
-    int.to_string(count),
-    "TYPE",
-    key_type_to_string(key_type),
-  ]
+  let modifiers = case key_type_filter {
+    option.Some(key_type) -> ["TYPE", key_type_to_string(key_type)]
+    option.None -> []
+  }
+  let modifiers = ["COUNT", int.to_string(count), ..modifiers]
+  let modifiers = case pattern_filter {
+    option.Some(pattern) -> ["MATCH", pattern, ..modifiers]
+    option.None -> modifiers
+  }
+  ["SCAN", int.to_string(cursor), ..modifiers]
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_array)
 }
@@ -1130,7 +1055,7 @@ pub fn decrby(
 /// Returns `Error(NotFound)` if the database is empty.
 ///
 /// See the [Redis RANDOMKEY documentation](https://redis.io/commands/randomkey) for more details.
-pub fn random_key(conn: Connection, timeout: Int) -> Result(String, Error) {
+pub fn randomkey(conn: Connection, timeout: Int) -> Result(String, Error) {
   ["RANDOMKEY"]
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_bulk_string)
@@ -1201,37 +1126,27 @@ pub fn persist(
 
 /// Ping the Redis server.
 ///
-/// Returns "PONG" if the server is responding.
-/// For use with a custom message, use `ping_message()`.
+/// If no message is provided, returns "PONG" if the server is responding.
+/// Otherwise, returns the provided message if the server is responding.
 ///
 /// See the [Redis PING documentation](https://redis.io/commands/ping) for more details.
-pub fn ping(conn: Connection, timeout: Int) -> Result(String, Error) {
-  ["PING"]
-  |> execute(conn, _, timeout)
-  |> result.try(fn(value) {
-    case value {
-      [resp.SimpleString("PONG")] -> Ok("PONG")
-      _ -> Error(RespError(resp.error_string(expected: "PONG", got: value)))
-    }
-  })
-}
-
-/// Ping the Redis server with a custom message.
-///
-/// Returns the same message if the server is responding.
-///
-/// See the [Redis PING documentation](https://redis.io/commands/ping) for more details.
-pub fn ping_message(
+pub fn ping(
   conn: Connection,
-  message: String,
+  message: option.Option(String),
   timeout: Int,
 ) -> Result(String, Error) {
-  ["PING", message]
+  let #(message, expected) = case message {
+    option.None -> #(["PING"], "PONG")
+    option.Some(msg) -> #(["PING", msg], msg)
+  }
+
+  message
   |> execute(conn, _, timeout)
   |> result.try(fn(value) {
     case value {
-      [resp.BulkString(msg)] if msg == message -> Ok(msg)
-      _ -> Error(RespError(resp.error_string(expected: message, got: value)))
+      [resp.SimpleString(got)] | [resp.BulkString(got)] if got == expected ->
+        Ok(got)
+      _ -> Error(RespError(resp.error_string(expected: expected, got: value)))
     }
   })
 }
@@ -1556,31 +1471,16 @@ pub fn sscan(
   conn: Connection,
   key: String,
   cursor: Int,
+  pattern_filter: option.Option(String),
   count: Int,
   timeout: Int,
 ) -> Result(#(List(String), Int), Error) {
-  ["SSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_cursor_and_array)
-}
+  let modifiers = case pattern_filter {
+    option.Some(pattern) -> ["MATCH", pattern, "COUNT", int.to_string(count)]
+    option.None -> ["COUNT", int.to_string(count)]
+  }
 
-pub fn sscan_pattern(
-  conn: Connection,
-  key: String,
-  cursor: Int,
-  pattern: String,
-  count: Int,
-  timeout: Int,
-) -> Result(#(List(String), Int), Error) {
-  [
-    "SSCAN",
-    key,
-    int.to_string(cursor),
-    "MATCH",
-    pattern,
-    "COUNT",
-    int.to_string(count),
-  ]
+  ["SSCAN", key, int.to_string(cursor), ..modifiers]
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_array)
 }
@@ -1718,31 +1618,16 @@ pub fn zscan(
   conn: Connection,
   key: String,
   cursor: Int,
+  pattern_filter: option.Option(String),
   count: Int,
   timeout: Int,
 ) -> Result(#(List(#(String, Score)), Int), Error) {
-  ["ZSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_cursor_and_sorted_set_member_array)
-}
+  let modifiers = case pattern_filter {
+    option.Some(pattern) -> ["MATCH", pattern, "COUNT", int.to_string(count)]
+    option.None -> ["COUNT", int.to_string(count)]
+  }
 
-pub fn zscan_pattern(
-  conn: Connection,
-  key: String,
-  cursor: Int,
-  pattern: String,
-  count: Int,
-  timeout: Int,
-) -> Result(#(List(#(String, Score)), Int), Error) {
-  [
-    "ZSCAN",
-    key,
-    int.to_string(cursor),
-    "MATCH",
-    pattern,
-    "COUNT",
-    int.to_string(count),
-  ]
+  ["ZSCAN", key, int.to_string(cursor), ..modifiers]
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_sorted_set_member_array)
 }
@@ -2087,31 +1972,15 @@ pub fn hscan(
   conn: Connection,
   key: String,
   cursor: Int,
+  pattern_filter: option.Option(String),
   count: Int,
   timeout: Int,
 ) -> Result(#(List(String), Int), Error) {
-  ["HSCAN", key, int.to_string(cursor), "COUNT", int.to_string(count)]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_cursor_and_array)
-}
-
-pub fn hscan_pattern(
-  conn: Connection,
-  key: String,
-  cursor: Int,
-  pattern: String,
-  count: Int,
-  timeout: Int,
-) -> Result(#(List(String), Int), Error) {
-  [
-    "HSCAN",
-    key,
-    int.to_string(cursor),
-    "MATCH",
-    pattern,
-    "COUNT",
-    int.to_string(count),
-  ]
+  let modifiers = case pattern_filter {
+    option.Some(pattern) -> ["MATCH", pattern, "COUNT", int.to_string(count)]
+    option.None -> ["COUNT", int.to_string(count)]
+  }
+  ["HSCAN", key, int.to_string(cursor), ..modifiers]
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_array)
 }

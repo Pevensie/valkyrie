@@ -60,18 +60,18 @@ pub fn create_connection_test() {
     valkyrie.default_config()
     |> valkyrie.create_connection(1000)
 
-  let assert Ok("PONG") = valkyrie.ping(conn, 1000)
+  let assert Ok("PONG") = valkyrie.ping(conn, option.None, 1000)
   let assert Ok(_) = valkyrie.shutdown(conn)
 }
 
 pub fn pool_connection_test() {
   use client <- get_test_conn()
-  let assert Ok("PONG") = valkyrie.ping(client, 1000)
+  let assert Ok("PONG") = valkyrie.ping(client, option.None, 1000)
 }
 
 pub fn supervised_pool_connection_test() {
   use client <- get_supervised_conn()
-  let assert Ok("PONG") = valkyrie.ping(client, 1000)
+  let assert Ok("PONG") = valkyrie.ping(client, option.None, 1000)
 }
 
 // ----------------------------- //
@@ -134,7 +134,7 @@ pub fn url_config_error_cases_test() {
 pub fn url_config_integration_test() {
   let assert Ok(config) = valkyrie.url_config("redis://localhost:6379")
   let assert Ok(conn) = config |> valkyrie.create_connection(1000)
-  let assert Ok("PONG") = valkyrie.ping(conn, 1000)
+  let assert Ok("PONG") = valkyrie.ping(conn, option.None, 1000)
   let assert Ok(_) = valkyrie.shutdown(conn)
 }
 
@@ -276,13 +276,15 @@ pub fn scan_test() {
     let assert Ok("OK") = conn |> valkyrie.set(key, "value", option.None, 1000)
   })
 
-  let assert Ok(#(keys, cursor)) = conn |> valkyrie.scan(0, 10, 1000)
+  let assert Ok(#(keys, cursor)) =
+    conn |> valkyrie.scan(0, option.None, 10, option.None, 1000)
   keys |> list.length |> should.not_equal(0)
 
   case cursor {
     0 -> Nil
     _ -> {
-      let assert Ok(_) = conn |> valkyrie.scan(cursor, 10, 1000)
+      let assert Ok(_) =
+        conn |> valkyrie.scan(cursor, option.None, 10, option.None, 1000)
       Nil
     }
   }
@@ -299,11 +301,46 @@ pub fn scan_pattern_test() {
     conn |> valkyrie.set("other:key", "3", option.None, 1000)
 
   let assert Ok(#(keys, _)) =
-    conn |> valkyrie.scan_pattern(0, "test:scanpat:*", 10, 1000)
+    conn
+    |> valkyrie.scan(0, option.Some("test:scanpat:*"), 10, option.None, 1000)
 
   keys
   |> list.all(fn(key) { string.starts_with(key, "test:scanpat:") })
   |> should.be_true
+}
+
+pub fn scan_key_type_test() {
+  use conn <- get_test_conn()
+
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:scan:type:string", "value", option.None, 1000)
+  let assert Ok(1) =
+    conn |> valkyrie.lpush("test:scan:type:list", ["item"], 1000)
+
+  let assert Ok(#(["test:scan:type:list"], _)) =
+    conn
+    |> valkyrie.scan(0, option.None, 10, option.Some(valkyrie.List), 1000)
+}
+
+pub fn scan_pattern_and_key_type_test() {
+  use conn <- get_test_conn()
+
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:scan:pat1:string", "value", option.None, 1000)
+  let assert Ok("OK") =
+    conn |> valkyrie.set("test:scan:pat2:string", "value", option.None, 1000)
+  let assert Ok(1) =
+    conn |> valkyrie.lpush("test:scan:pat1:list", ["item"], 1000)
+
+  let assert Ok(#(["test:scan:pat1:string"], _)) =
+    conn
+    |> valkyrie.scan(
+      0,
+      option.Some("test:scan:pat1:*"),
+      10,
+      option.Some(valkyrie.String),
+      1000,
+    )
 }
 
 pub fn key_type_test() {
@@ -368,7 +405,7 @@ pub fn random_key_test() {
   let assert Ok("OK") =
     conn |> valkyrie.set("test:random:2", "2", option.None, 1000)
 
-  let assert Ok(key) = conn |> valkyrie.random_key(1000)
+  let assert Ok(key) = conn |> valkyrie.randomkey(1000)
   key |> string.length |> should.not_equal(0)
 }
 
@@ -419,14 +456,14 @@ pub fn decrby_test() {
 pub fn ping_test() {
   use conn <- get_test_conn()
 
-  let assert Ok("PONG") = conn |> valkyrie.ping(1000)
+  let assert Ok("PONG") = conn |> valkyrie.ping(option.None, 1000)
 }
 
 pub fn ping_message_test() {
   use conn <- get_test_conn()
 
   let assert Ok("Hello Redis") =
-    conn |> valkyrie.ping_message("Hello Redis", 1000)
+    conn |> valkyrie.ping(option.Some("Hello Redis"), 1000)
 }
 
 pub fn expire_test() {
@@ -617,14 +654,14 @@ pub fn sscan_test() {
   let assert Ok(_) = conn |> valkyrie.sadd("test:set:scan", members, 1000)
 
   let assert Ok(#(scanned_members, cursor)) =
-    conn |> valkyrie.sscan("test:set:scan", 0, 10, 1000)
+    conn |> valkyrie.sscan("test:set:scan", 0, option.None, 10, 1000)
   scanned_members |> list.length |> should.not_equal(0)
 
   case cursor {
     0 -> Nil
     _ -> {
       let assert Ok(_) =
-        conn |> valkyrie.sscan("test:set:scan", cursor, 10, 1000)
+        conn |> valkyrie.sscan("test:set:scan", cursor, option.None, 10, 1000)
       Nil
     }
   }
@@ -642,7 +679,8 @@ pub fn sscan_pattern_test() {
     )
 
   let assert Ok(#(user_members, _)) =
-    conn |> valkyrie.sscan_pattern("test:set:pattern", 0, "user:*", 10, 1000)
+    conn
+    |> valkyrie.sscan("test:set:pattern", 0, option.Some("user:*"), 10, 1000)
 
   user_members
   |> list.all(fn(member) { string.starts_with(member, "user:") })
@@ -863,7 +901,7 @@ pub fn zscan_test() {
       1000,
     )
   let assert Ok(#(scan_result, _cursor)) =
-    valkyrie.zscan(conn, "test:zset:scan", 0, 10, 1000)
+    valkyrie.zscan(conn, "test:zset:scan", 0, option.None, 10, 1000)
   scan_result |> list.length |> should.equal(4)
 }
 
@@ -887,11 +925,11 @@ pub fn zscan_pattern_test() {
       1000,
     )
   let assert Ok(#(scan_result, _cursor)) =
-    valkyrie.zscan_pattern(
+    valkyrie.zscan(
       conn,
       "test:zset:scanpattern",
       0,
-      "prefix_*",
+      option.Some("prefix_*"),
       10,
       1000,
     )
@@ -1076,7 +1114,7 @@ pub fn hscan_test() {
   let assert Ok(4) = valkyrie.hlen(conn, "test:hash:scan", 1000)
 
   let assert Ok(#(items, _cursor)) =
-    valkyrie.hscan(conn, "test:hash:scan", 0, 10, 1000)
+    valkyrie.hscan(conn, "test:hash:scan", 0, option.None, 10, 1000)
   items |> list.length |> should.equal(8)
 }
 
@@ -1095,11 +1133,11 @@ pub fn hscan_pattern_test() {
   let assert Ok(4) = valkyrie.hlen(conn, "test:hash:scanpattern", 1000)
 
   let assert Ok(#(items, _cursor)) =
-    valkyrie.hscan_pattern(
+    valkyrie.hscan(
       conn,
       "test:hash:scanpattern",
       0,
-      "prefix_*",
+      option.Some("prefix_*"),
       10,
       1000,
     )
