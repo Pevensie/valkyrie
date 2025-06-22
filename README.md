@@ -3,7 +3,8 @@
 [![Package Version](https://img.shields.io/hexpm/v/valkyrie)](https://hex.pm/packages/valkyrie)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/valkyrie/)
 
-A Gleam client for Valkey, KeyDB, Redis, Dragonfly and other Redis-compatible databases.
+A lightweight, high performance Gleam client for Valkey, KeyDB, Redis, Dragonfly and
+other Redis-compatible databases.
 
 ## Installation
 
