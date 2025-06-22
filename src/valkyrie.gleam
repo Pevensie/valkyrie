@@ -19,11 +19,6 @@ import valkyrie/resp
 
 const protocol_version = 3
 
-/// The configuration for connecting to a Redis-compatible database.
-pub type Config {
-  Config(host: String, port: Int, auth: Auth)
-}
-
 pub type Auth {
   NoAuth
   PasswordOnly(String)
@@ -32,7 +27,7 @@ pub type Auth {
 
 pub opaque type Connection {
   Single(socket: mug.Socket)
-  Pooled(bath.Pool(mug.Socket))
+  Pooled(process.Subject(bath.Msg(mug.Socket)))
 }
 
 pub type PoolError {
@@ -81,6 +76,11 @@ fn auth_to_options_list(auth: Auth) -> List(String) {
     PasswordOnly(password) -> ["AUTH", "default", password]
     UsernameAndPassword(username, password) -> ["AUTH", username, password]
   }
+}
+
+/// The configuration for connecting to a Redis-compatible database.
+pub type Config {
+  Config(host: String, port: Int, auth: Auth)
 }
 
 /// Create a default Redis configuration.
@@ -231,16 +231,23 @@ fn create_pool_builder(
   config: Config,
   pool_size: Int,
   init_timeout: Int,
+  pool_name: option.Option(process.Name(bath.Msg(mug.Socket))),
 ) -> bath.Builder(mug.Socket) {
-  bath.new(fn() {
-    create_socket(config, init_timeout)
-    |> result.map_error(error_to_string)
-  })
-  |> bath.size(pool_size)
-  |> bath.on_shutdown(fn(socket) {
-    mug.shutdown(socket)
-    |> result.unwrap(Nil)
-  })
+  let pool_builder =
+    bath.new(fn() {
+      create_socket(config, init_timeout)
+      |> result.map_error(error_to_string)
+    })
+    |> bath.size(pool_size)
+    |> bath.on_shutdown(fn(socket) {
+      mug.shutdown(socket)
+      |> result.unwrap(Nil)
+    })
+
+  case pool_name {
+    option.Some(name) -> bath.name(pool_builder, name)
+    option.None -> pool_builder
+  }
 }
 
 /// Start a connection pool for Redis connections.
@@ -256,10 +263,11 @@ fn create_pool_builder(
 pub fn start_pool(
   config config: Config,
   size pool_size: Int,
+  name pool_name: option.Option(process.Name(bath.Msg(mug.Socket))),
   timeout init_timeout: Int,
 ) -> Result(Connection, StartError) {
   use pool <- result.try(
-    create_pool_builder(config, pool_size, init_timeout)
+    create_pool_builder(config, pool_size, init_timeout, pool_name)
     |> bath.start(init_timeout)
     |> result.map(Pooled)
     |> result.map_error(ActorStartError),
@@ -275,6 +283,9 @@ pub fn start_pool(
 /// Returns a supervision specification for including the pool into your
 /// supervision tree. The pool will be automatically restarted if it crashes,
 /// making this the recommended approach for production applications.
+///
+/// If you wish to use the supervised pool under a static supervisor, you _must_
+/// provide a name, or you'll have no
 ///
 /// Connections are created lazily when requested from the pool. On creation,
 /// connections will call `HELLO 3` with any authentication information to authenticate
@@ -292,21 +303,17 @@ pub fn start_pool(
 /// import valkyrie
 ///
 /// pub fn main() {
-///   // Create a subject to receive the connection once the supervision tree has been
-///   // started. Use a named subject to make sure we can always receive the connection,
-///   // even if our original process crashes.
-///   let conn_receiver_name = process.new_name("valkyrie_conn_receiver")
-///   let assert Ok(_) = process.register(process.self(), conn_receiver_name)
-///
-///   let conn_receiver = process.named_subject(conn_receiver_name)
+///   // Create a name to interact with the connection pool once it's started under the
+///   // static supervisor.
+///   let pool_name = process.new_name("connection_pool")
 ///
 ///   // Define a pool of 10 connections to the default Redis instance on localhost.
 ///   let valkyrie_child_spec =
 ///     valkyrie.default_config()
 ///     |> valkyrie.supervised_pool(
-///       receiver: conn_receiver,
 ///       size: 10,
-///       timeout: 1000
+///       name: option.Some(pool_name),
+///       timeout: 1000,
 ///     )
 ///
 ///   // Start the pool under a supervisor
@@ -315,24 +322,29 @@ pub fn start_pool(
 ///     |> supervisor.add(valkyrie_child_spec)
 ///     |> supervisor.start
 ///
-///   // Receive the connection now that the pool is started
-///   let assert Ok(conn) = process.receive(conn_receiver, 1000)
+///   // Get the connection now that the pool is started
+///   let conn = valkyrie.named_connection(pool_name)
 ///
 ///   // Use the connection.
-///   let assert Ok(_) = valkyrie.set(conn, "key", "value", option.None, 1000)
-///   let assert Ok(_) = valkyrie.get(conn, "key", 1000)
+///   let assert Ok(_) = echo valkyrie.set(conn, "key", "value", option.None, 1000)
+///   let assert Ok(_) = echo valkyrie.get(conn, "key", 1000)
 ///
 ///   // Do more stuff...
 /// }
 /// ```
 pub fn supervised_pool(
   config config: Config,
-  receiver subj: process.Subject(Connection),
   size pool_size: Int,
+  name pool_name: option.Option(process.Name(bath.Msg(mug.Socket))),
   timeout init_timeout: Int,
-) -> supervision.ChildSpecification(process.Subject(bath.Msg(mug.Socket))) {
-  create_pool_builder(config, pool_size, init_timeout)
-  |> bath.supervised_map(subj, Pooled, init_timeout)
+) -> supervision.ChildSpecification(Connection) {
+  create_pool_builder(config, pool_size, init_timeout, pool_name)
+  |> bath.supervised_map(Pooled, init_timeout)
+}
+
+/// Create a connection from the process name given to the connection pool.
+pub fn named_connection(name: process.Name(bath.Msg(mug.Socket))) -> Connection {
+  Pooled(process.named_subject(name))
 }
 
 /// Shut down a Redis connection or connection pool.

@@ -21,7 +21,7 @@ pub fn main() {
 fn get_test_conn(next: fn(valkyrie.Connection) -> a) -> a {
   let assert Ok(conn) =
     valkyrie.default_config()
-    |> valkyrie.start_pool(3, 1000)
+    |> valkyrie.start_pool(3, option.None, 1000)
 
   let res = next(conn)
   let assert Ok(_) = valkyrie.custom(conn, ["FLUSHDB"], 1000)
@@ -30,17 +30,17 @@ fn get_test_conn(next: fn(valkyrie.Connection) -> a) -> a {
 }
 
 fn get_supervised_conn(next: fn(valkyrie.Connection) -> a) -> a {
-  let connection_subject = process.new_subject()
+  let connection_name = process.new_name("valkyrie_test_pool")
   let child_spec =
     valkyrie.default_config()
-    |> valkyrie.supervised_pool(connection_subject, 3, 1000)
+    |> valkyrie.supervised_pool(3, option.Some(connection_name), 1000)
 
   let assert Ok(_started) =
     static_supervisor.new(static_supervisor.OneForOne)
     |> static_supervisor.add(child_spec)
     |> static_supervisor.start
 
-  let assert Ok(conn) = process.receive(connection_subject, 1000)
+  let conn = valkyrie.named_connection(connection_name)
 
   let res = next(conn)
   let assert Ok(_) = valkyrie.custom(conn, ["FLUSHDB"], 1000)
@@ -1847,7 +1847,7 @@ pub fn pool_error_scenarios_test() {
     )
 
   // This should fail to create connections but not panic
-  let pool_result = invalid_config |> valkyrie.start_pool(1, 100)
+  let pool_result = invalid_config |> valkyrie.start_pool(1, option.None, 100)
   case pool_result {
     Error(_) -> Nil
     Ok(conn) -> {
