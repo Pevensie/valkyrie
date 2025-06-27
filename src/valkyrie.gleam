@@ -115,7 +115,7 @@ pub fn auth(config: Config, auth: Auth) -> Config {
 }
 
 /// Update the inet settings in a Redis configuration.
-pub fn auth(config: Config, inet: Inet) -> Config {
+pub fn inet(config: Config, inet: Inet) -> Config {
   Config(..config, inet:)
 }
 
