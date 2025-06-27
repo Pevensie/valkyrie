@@ -78,9 +78,14 @@ fn auth_to_options_list(auth: Auth) -> List(String) {
   }
 }
 
+pub type Inet {
+  IpV4
+  IpV6
+}
+
 /// The configuration for connecting to a Redis-compatible database.
 pub type Config {
-  Config(host: String, port: Int, auth: Auth)
+  Config(host: String, port: Int, auth: Auth, inet: Inet)
 }
 
 /// Create a default Redis configuration.
@@ -89,8 +94,9 @@ pub type Config {
 /// - host: "localhost"
 /// - port: 6379
 /// - auth: NoAuth
+/// - inet: IpV4
 pub fn default_config() -> Config {
-  Config(host: "localhost", port: 6379, auth: NoAuth)
+  Config(host: "localhost", port: 6379, auth: NoAuth, inet: IpV4)
 }
 
 /// Update the host in a Redis configuration.
@@ -106,6 +112,11 @@ pub fn port(config: Config, port: Int) -> Config {
 /// Update the authentication settings in a Redis configuration.
 pub fn auth(config: Config, auth: Auth) -> Config {
   Config(..config, auth:)
+}
+
+/// Update the inet settings in a Redis configuration.
+pub fn auth(config: Config, inet: Inet) -> Config {
+  Config(..config, inet:)
 }
 
 pub type UrlParseError {
@@ -132,15 +143,15 @@ pub type UrlParseError {
 /// ```gleam
 /// // Basic usage
 /// let assert Ok(config) = url_config("redis://localhost:6379")
-/// // Config(host: "localhost", port: 6379, auth: NoAuth)
+/// // Config(host: "localhost", port: 6379, auth: NoAuth, inet: IpV4)
 ///
 /// // With authentication
 /// let assert Ok(config) = url_config("redis://user:pass@localhost:6379")
-/// // Config(host: "localhost", port: 6379, auth: UsernameAndPassword("user", "pass"))
+/// // Config(host: "localhost", port: 6379, auth: UsernameAndPassword("user", "pass"), inet: IpV4)
 ///
 /// // Password-only authentication
 /// let assert Ok(config) = url_config("redis://:mypassword@localhost:6379")
-/// // Config(host: "localhost", port: 6379, auth: PasswordOnly("mypassword"))
+/// // Config(host: "localhost", port: 6379, auth: PasswordOnly("mypassword"), inet: IpV4)
 /// ```
 pub fn url_config(url: String) -> Result(Config, UrlParseError) {
   use parsed_uri <- result.try(
@@ -183,7 +194,7 @@ pub fn url_config(url: String) -> Result(Config, UrlParseError) {
     option.None -> NoAuth
   }
 
-  Ok(Config(host: host, port: port, auth: auth))
+  Ok(Config(host: host, port: port, auth: auth, inet: IpV4))
 }
 
 // ------------------------------- //
@@ -192,7 +203,7 @@ pub fn url_config(url: String) -> Result(Config, UrlParseError) {
 
 fn create_socket(config: Config, timeout: Int) -> Result(mug.Socket, Error) {
   use socket <- result.try(
-    mug.connect(mug.ConnectionOptions(config.host, config.port, timeout))
+    mug.connect(mug.ConnectionOptions(config.host, config.port, config.inet, timeout))
     |> result.map_error(TcpError),
   )
 
