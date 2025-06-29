@@ -229,7 +229,7 @@ pub fn url_config(url: String) -> Result(Config, UrlParseError) {
 fn create_socket(config: Config, timeout: Int) -> Result(mug.Socket, Error) {
   use socket <- result.try(
     mug.new(config.host, config.port)
-    |> mug.ip_version_preference(mug.Ipv6Preferred)
+    |> mug.ip_version_preference(config.ip_version_preference)
     |> mug.timeout(timeout)
     |> mug.connect
     |> result.map_error(ConnectError),
