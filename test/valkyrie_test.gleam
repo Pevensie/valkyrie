@@ -11,6 +11,7 @@ import gleam/string
 import gleam/time/timestamp
 import gleeunit
 import gleeunit/should
+import mug
 import valkyrie
 import valkyrie/resp
 
@@ -1844,6 +1845,7 @@ pub fn pool_error_scenarios_test() {
       host: "nonexistent.redis.server.invalid",
       port: 6379,
       auth: valkyrie.NoAuth,
+      ip_version_preference: mug.Ipv4Only,
     )
 
   // This should fail to create connections but not panic

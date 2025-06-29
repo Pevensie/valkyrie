@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.0 - 2025-06-29
+
+- Update `mug` and add support for IPv6 connections.
+
 ## 2.0.0 - 2025-06-22
 
 - Add named pool support.
