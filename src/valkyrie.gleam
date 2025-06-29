@@ -19,6 +19,8 @@ import valkyrie/resp
 
 const protocol_version = 3
 
+const default_ip_version_preference = mug.Ipv6Preferred
+
 pub type Auth {
   NoAuth
   PasswordOnly(String)
@@ -39,7 +41,7 @@ pub type Error {
   NotFound
   Conflict
   RespError(String)
-  ConnectionError
+  ConnectError(mug.ConnectError)
   Timeout
   TcpError(mug.Error)
   ServerError(String)
@@ -51,7 +53,17 @@ fn error_to_string(error) {
     NotFound -> "Not found"
     Conflict -> "Conflict"
     RespError(message) -> "RESP protocol error: " <> message
-    ConnectionError -> "Connection error"
+    ConnectError(error) ->
+      "Failed to connect: "
+      <> case error {
+        mug.ConnectFailedBoth(ipv4:, ipv6:) ->
+          "IPv4 failure: "
+          <> string.inspect(ipv4)
+          <> "; IPv6 failure: "
+          <> string.inspect(ipv6)
+        mug.ConnectFailedIpv4(ipv4:) -> "IPv4 failure: " <> string.inspect(ipv4)
+        mug.ConnectFailedIpv6(ipv6:) -> "IPv6 failure: " <> string.inspect(ipv6)
+      }
     Timeout -> "Timeout"
     TcpError(error) -> "TCP error: " <> string.inspect(error)
     ServerError(message) -> message
@@ -80,17 +92,28 @@ fn auth_to_options_list(auth: Auth) -> List(String) {
 
 /// The configuration for connecting to a Redis-compatible database.
 pub type Config {
-  Config(host: String, port: Int, auth: Auth)
+  Config(
+    host: String,
+    port: Int,
+    auth: Auth,
+    ip_version_preference: mug.IpVersionPreference,
+  )
 }
 
 /// Create a default Redis configuration.
 ///
 /// Returns a configuration with:
-/// - host: "localhost"
-/// - port: 6379
-/// - auth: NoAuth
+/// - host: `"localhost"`
+/// - port: `6379`
+/// - auth: `NoAuth`
+/// - ip_version_preference: `mug.Ipv6Preferred`
 pub fn default_config() -> Config {
-  Config(host: "localhost", port: 6379, auth: NoAuth)
+  Config(
+    host: "localhost",
+    port: 6379,
+    auth: NoAuth,
+    ip_version_preference: default_ip_version_preference,
+  )
 }
 
 /// Update the host in a Redis configuration.
@@ -106,6 +129,14 @@ pub fn port(config: Config, port: Int) -> Config {
 /// Update the authentication settings in a Redis configuration.
 pub fn auth(config: Config, auth: Auth) -> Config {
   Config(..config, auth:)
+}
+
+/// Update the IP version preference in a Redis configuration.
+pub fn ip_version_preference(
+  config: Config,
+  preference: mug.IpVersionPreference,
+) -> Config {
+  Config(..config, ip_version_preference: preference)
 }
 
 pub type UrlParseError {
@@ -183,7 +214,12 @@ pub fn url_config(url: String) -> Result(Config, UrlParseError) {
     option.None -> NoAuth
   }
 
-  Ok(Config(host: host, port: port, auth: auth))
+  Ok(Config(
+    host: host,
+    port: port,
+    auth: auth,
+    ip_version_preference: default_ip_version_preference,
+  ))
 }
 
 // ------------------------------- //
@@ -192,8 +228,11 @@ pub fn url_config(url: String) -> Result(Config, UrlParseError) {
 
 fn create_socket(config: Config, timeout: Int) -> Result(mug.Socket, Error) {
   use socket <- result.try(
-    mug.connect(mug.ConnectionOptions(config.host, config.port, timeout))
-    |> result.map_error(TcpError),
+    mug.new(config.host, config.port)
+    |> mug.ip_version_preference(mug.Ipv6Preferred)
+    |> mug.timeout(timeout)
+    |> mug.connect
+    |> result.map_error(ConnectError),
   )
 
   let conn = Single(socket)
@@ -339,7 +378,8 @@ pub fn supervised_pool(
   timeout init_timeout: Int,
 ) -> supervision.ChildSpecification(Connection) {
   create_pool_builder(config, pool_size, init_timeout, pool_name)
-  |> bath.supervised_map(Pooled, init_timeout)
+  |> bath.supervised(init_timeout)
+  |> supervision.map_data(Pooled)
 }
 
 /// Create a connection from the process name given to the connection pool.
@@ -376,7 +416,7 @@ fn execute(conn: Connection, command: List(String), timeout: Int) {
           Ok(value) -> bath.keep() |> bath.returning(Ok(value))
           Error(error) ->
             case error {
-              ConnectionError | RespError(_) | TcpError(_) -> {
+              ConnectError(_) | RespError(_) | TcpError(_) -> {
                 bath.discard()
                 |> bath.returning(Error(error))
               }
@@ -730,7 +770,7 @@ fn expect_sorted_set_member_array(
 ) -> Result(List(#(String, Score)), Error) {
   case value {
     [resp.Array(members)] -> {
-      use array <- result.then(
+      use array <- result.try(
         members
         |> list.try_map(fn(item) {
           case item {
