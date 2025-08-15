@@ -711,6 +711,7 @@ fn expect_bulk_string_array(
             )
         }
       })
+    [resp.Null] -> Error(NotFound)
     _ -> Error(RespError(resp.error_string(expected: "array", got: value)))
   }
 }
@@ -1593,21 +1594,10 @@ pub fn lpop(
   key: String,
   count: Int,
   timeout: Int,
-) -> Result(String, Error) {
+) -> Result(List(String), Error) {
   ["LPOP", key, int.to_string(count)]
   |> execute(conn, _, timeout)
-  |> result.try(fn(value) {
-    case value {
-      // When count is provided, Redis returns an array
-      [resp.Array([resp.BulkString(str)])] -> Ok(str)
-      [resp.Array([])] -> Error(NotFound)
-      [resp.Null] -> Error(NotFound)
-      _ ->
-        Error(
-          RespError(resp.error_string(expected: "string or array", got: value)),
-        )
-    }
-  })
+  |> result.try(expect_bulk_string_array)
 }
 
 /// Remove and return elements from the right (tail) of a list.
@@ -1620,21 +1610,10 @@ pub fn rpop(
   key: String,
   count: Int,
   timeout: Int,
-) -> Result(String, Error) {
+) -> Result(List(String), Error) {
   ["RPOP", key, int.to_string(count)]
   |> execute(conn, _, timeout)
-  |> result.try(fn(value) {
-    case value {
-      // When count is provided, Redis returns an array
-      [resp.Array([resp.BulkString(str)])] -> Ok(str)
-      [resp.Array([])] -> Error(NotFound)
-      [resp.Null] -> Error(NotFound)
-      _ ->
-        Error(
-          RespError(resp.error_string(expected: "string or array", got: value)),
-        )
-    }
-  })
+  |> result.try(expect_bulk_string_array)
 }
 
 /// Get an element from a list by its index.

@@ -822,9 +822,36 @@ pub fn lpop_rpop_test() {
 
   let assert Ok(_) = valkyrie.rpush(conn, "test:pop", ["a", "b", "c"], 1000)
 
-  let assert Ok("a") = valkyrie.lpop(conn, "test:pop", 1, 1000)
-  let assert Ok("c") = valkyrie.rpop(conn, "test:pop", 1, 1000)
+  let assert Ok(["a"]) = valkyrie.lpop(conn, "test:pop", 1, 1000)
+  let assert Ok(["c"]) = valkyrie.rpop(conn, "test:pop", 1, 1000)
   let assert Ok(1) = valkyrie.llen(conn, "test:pop", 1000)
+}
+
+pub fn lpop_rpop_multiple_test() {
+  use conn <- get_test_conn()
+
+  let assert Ok(_) =
+    valkyrie.rpush(conn, "test:pop_multiple", ["a", "b", "c", "d", "e"], 1000)
+
+  // Pop multiple from left
+  let assert Ok(["a", "b"]) = valkyrie.lpop(conn, "test:pop_multiple", 2, 1000)
+  let assert Ok(3) = valkyrie.llen(conn, "test:pop_multiple", 1000)
+
+  // Pop multiple from right
+  let assert Ok(["e", "d"]) = valkyrie.rpop(conn, "test:pop_multiple", 2, 1000)
+  let assert Ok(1) = valkyrie.llen(conn, "test:pop_multiple", 1000)
+
+  let assert Ok(["c"]) = valkyrie.lpop(conn, "test:pop_multiple", 3, 1000)
+  let assert Ok(0) = valkyrie.llen(conn, "test:pop_multiple", 1000)
+
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.lpop(conn, "test:pop_multiple", 1, 1000)
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.lpop(conn, "test:pop_multiple", 2, 1000)
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.rpop(conn, "test:pop_multiple", 1, 1000)
+  let assert Error(valkyrie.NotFound) =
+    valkyrie.rpop(conn, "test:pop_multiple", 2, 1000)
 }
 
 pub fn lindex_test() {
