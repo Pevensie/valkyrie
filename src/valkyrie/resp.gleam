@@ -77,6 +77,16 @@ pub fn encode_command(parts: List(String)) {
   |> bit_array.from_string
 }
 
+@internal
+pub fn encode_pipeline(commands: List(List(String))) {
+  commands
+  |> list.map(fn(command) {
+    encode_command(command)
+    |> bit_array.append(bit_array.from_string("\r\n"))
+  })
+  |> bit_array.concat
+}
+
 fn encode_value(value: Value) -> String {
   case value {
     Nan -> nan()
@@ -255,9 +265,9 @@ fn decode_multiple(
   use value <- result.try(decode_message(value))
 
   let storage = list.append(storage, [value.0])
-  case value {
-    #(_, <<>>) -> Ok(storage)
-    #(_, rest) -> decode_multiple(rest, storage)
+  case value.1 {
+    <<>> -> Ok(storage)
+    rest -> decode_multiple(rest, storage)
   }
 }
 

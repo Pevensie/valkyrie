@@ -14,6 +14,7 @@ import gleam/string
 import gleam/time/timestamp
 import gleam/uri
 import mug
+import valkyrie/internal/commands
 
 import valkyrie/resp
 
@@ -408,11 +409,16 @@ pub fn shutdown(conn: Connection, timeout: Int) -> Result(Nil, Nil) {
 // ------------------------------- //
 
 fn execute(conn: Connection, command: List(String), timeout: Int) {
+  execute_bits(conn, resp.encode_command(command), timeout)
+}
+
+@internal
+pub fn execute_bits(conn: Connection, command_bits: BitArray, timeout: Int) {
   case conn {
-    Single(socket) -> do_execute(socket, command, timeout)
+    Single(socket) -> do_execute(socket, command_bits, timeout)
     Pooled(pool) -> {
       bath.apply(pool, timeout, fn(socket) {
-        case do_execute(socket, command, timeout) {
+        case do_execute(socket, command_bits, timeout) {
           Ok(value) -> bath.keep() |> bath.returning(Ok(value))
           Error(error) ->
             case error {
@@ -441,9 +447,10 @@ fn execute(conn: Connection, command: List(String), timeout: Int) {
   }
 }
 
-fn do_execute(socket: mug.Socket, command: List(String), timeout: Int) {
+@internal
+pub fn do_execute(socket: mug.Socket, command_bits: BitArray, timeout: Int) {
   use _ <- result.try(
-    mug.send(socket, resp.encode_command(command))
+    mug.send(socket, command_bits)
     |> result.map_error(TcpError),
   )
 
@@ -869,7 +876,8 @@ pub type KeyType {
   Stream
 }
 
-fn key_type_to_string(key_type: KeyType) {
+@internal
+pub fn key_type_to_string(key_type: KeyType) {
   case key_type {
     Set -> "set"
     ZSet -> "zset"
@@ -892,7 +900,7 @@ pub fn keys(
   timeout: Int,
 ) -> Result(List(String), Error) {
   use value <- result.try(
-    ["KEYS", pattern]
+    commands.keys(pattern)
     |> execute(conn, _, timeout),
   )
 
@@ -926,16 +934,12 @@ pub fn scan(
   key_type_filter: option.Option(KeyType),
   timeout: Int,
 ) -> Result(#(List(String), Int), Error) {
-  let modifiers = case key_type_filter {
-    option.Some(key_type) -> ["TYPE", key_type_to_string(key_type)]
-    option.None -> []
-  }
-  let modifiers = ["COUNT", int.to_string(count), ..modifiers]
-  let modifiers = case pattern_filter {
-    option.Some(pattern) -> ["MATCH", pattern, ..modifiers]
-    option.None -> modifiers
-  }
-  ["SCAN", int.to_string(cursor), ..modifiers]
+  commands.scan(
+    cursor,
+    pattern_filter,
+    count,
+    option.map(key_type_filter, key_type_to_string),
+  )
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_array)
 }
