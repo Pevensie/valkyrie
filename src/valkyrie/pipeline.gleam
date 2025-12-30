@@ -28,6 +28,9 @@ pub fn new() -> Pipeline {
 ///
 /// Returns a list of `resp.Value` for each command in the order they were added.
 /// Returns `Ok([])` immediately if the pipeline is empty.
+///
+/// Note: KeyDB wraps pipeline results in an outer array, while Redis returns
+/// a flat list. You may need to handle this difference in your application.
 pub fn exec(pipeline: Pipeline, conn: Connection, timeout: Int) {
   case pipeline.commands {
     [] -> Ok([])

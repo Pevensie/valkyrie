@@ -1925,6 +1925,8 @@ pub fn edge_case_operations_test() {
 // ------------------------------- //
 
 pub fn pipeline_returns_all_results_test() {
+  // KeyDB has a bug with multiple KEYS commands in a pipeline
+  use <- bool.guard(when: is_keydb(), return: Nil)
   use conn <- get_test_conn()
 
   // Set up test data
