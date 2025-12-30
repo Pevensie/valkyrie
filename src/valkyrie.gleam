@@ -954,7 +954,7 @@ pub fn exists(
   keys: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["EXISTS", ..keys]
+  commands.exists(keys)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -965,7 +965,7 @@ pub fn exists(
 ///
 /// See the [Redis GET documentation](https://redis.io/commands/get) for more details.
 pub fn get(conn: Connection, key: String, timeout: Int) -> Result(String, Error) {
-  ["GET", key]
+  commands.get(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_any_nullable_string)
 }
@@ -981,7 +981,7 @@ pub fn mget(
   keys: List(String),
   timeout: Int,
 ) -> Result(List(Result(String, Error)), Error) {
-  ["MGET", ..keys]
+  commands.mget(keys)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_bulk_string_array)
 }
@@ -998,7 +998,7 @@ pub fn append(
   value: String,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["APPEND", key, value]
+  commands.append(key, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1071,40 +1071,38 @@ pub fn set(
   options: option.Option(SetOptions),
   timeout: Int,
 ) -> Result(String, Error) {
-  let modifiers =
-    options
-    |> option.map(fn(options) {
-      let modifiers = case options.expiry_option {
-        option.Some(KeepTtl) -> ["KEEPTTL"]
-        option.Some(ExpirySeconds(value)) -> ["EX", int.to_string(value)]
-        option.Some(ExpiryMilliseconds(value)) -> ["PX", int.to_string(value)]
-        option.Some(ExpiresAtUnixSeconds(value)) -> [
-          "EXAT",
-          int.to_string(value),
-        ]
-        option.Some(ExpiresAtUnixMilliseconds(value)) -> [
-          "PXAT",
-          int.to_string(value),
-        ]
-        option.None -> []
-      }
-      let modifiers = case options.return_old {
-        True -> ["GET", ..modifiers]
-        False -> modifiers
-      }
-      let modifiers = case options.existence_condition {
-        option.Some(IfNotExists) -> ["NX", ..modifiers]
-        option.Some(IfExists) -> ["XX", ..modifiers]
-        option.None -> modifiers
-      }
-      modifiers
-    })
-    |> option.unwrap([])
-
-  let command = ["SET", key, value, ..modifiers]
-
-  execute(conn, command, timeout)
+  let modifiers = set_options_to_modifiers(options)
+  commands.set(key, value, modifiers)
+  |> execute(conn, _, timeout)
   |> result.try(expect_any_nullable_string)
+}
+
+fn set_options_to_modifiers(options: option.Option(SetOptions)) -> List(String) {
+  options
+  |> option.map(fn(options) {
+    let modifiers = case options.expiry_option {
+      option.Some(KeepTtl) -> ["KEEPTTL"]
+      option.Some(ExpirySeconds(value)) -> ["EX", int.to_string(value)]
+      option.Some(ExpiryMilliseconds(value)) -> ["PX", int.to_string(value)]
+      option.Some(ExpiresAtUnixSeconds(value)) -> ["EXAT", int.to_string(value)]
+      option.Some(ExpiresAtUnixMilliseconds(value)) -> [
+        "PXAT",
+        int.to_string(value),
+      ]
+      option.None -> []
+    }
+    let modifiers = case options.return_old {
+      True -> ["GET", ..modifiers]
+      False -> modifiers
+    }
+    let modifiers = case options.existence_condition {
+      option.Some(IfNotExists) -> ["NX", ..modifiers]
+      option.Some(IfExists) -> ["XX", ..modifiers]
+      option.None -> modifiers
+    }
+    modifiers
+  })
+  |> option.unwrap([])
 }
 
 /// Set multiple key-value pairs atomically.
@@ -1117,12 +1115,7 @@ pub fn mset(
   kv_list: List(#(String, String)),
   timeout: Int,
 ) -> Result(String, Error) {
-  let kv_list =
-    kv_list
-    |> list.map(fn(kv) { [kv.0, kv.1] })
-    |> list.flatten
-
-  ["MSET", ..kv_list]
+  commands.mset(kv_list)
   |> execute(conn, _, timeout)
   |> result.try(expect_any_string)
 }
@@ -1137,15 +1130,9 @@ pub fn del(
   keys: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  use value <- result.try(
-    ["DEL", ..keys]
-    |> execute(conn, _, timeout),
-  )
-
-  case value {
-    [resp.Integer(n)] -> Ok(n)
-    _ -> Error(RespError(resp.error_string(expected: "integer", got: value)))
-  }
+  commands.del(keys)
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
 }
 
 /// Increment the integer value of a key by 1.
@@ -1155,7 +1142,7 @@ pub fn del(
 ///
 /// See the [Redis INCR documentation](https://redis.io/commands/incr) for more details.
 pub fn incr(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
-  ["INCR", key]
+  commands.incr(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1172,7 +1159,7 @@ pub fn incrby(
   value: Int,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["INCRBY", key, int.to_string(value)]
+  commands.incrby(key, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1189,7 +1176,7 @@ pub fn incrbyfloat(
   value: Float,
   timeout: Int,
 ) -> Result(Float, Error) {
-  ["INCRBYFLOAT", key, float.to_string(value)]
+  commands.incrbyfloat(key, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_float)
 }
@@ -1201,7 +1188,7 @@ pub fn incrbyfloat(
 ///
 /// See the [Redis DECR documentation](https://redis.io/commands/decr) for more details.
 pub fn decr(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
-  ["DECR", key]
+  commands.decr(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1218,7 +1205,7 @@ pub fn decrby(
   value: Int,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["DECRBY", key, int.to_string(value)]
+  commands.decrby(key, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1229,7 +1216,7 @@ pub fn decrby(
 ///
 /// See the [Redis RANDOMKEY documentation](https://redis.io/commands/randomkey) for more details.
 pub fn randomkey(conn: Connection, timeout: Int) -> Result(String, Error) {
-  ["RANDOMKEY"]
+  commands.randomkey()
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_bulk_string)
 }
@@ -1244,7 +1231,7 @@ pub fn key_type(
   key: String,
   timeout: Int,
 ) -> Result(KeyType, Error) {
-  ["TYPE", key]
+  commands.key_type(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_key_type)
 }
@@ -1261,7 +1248,7 @@ pub fn rename(
   new_key: String,
   timeout: Int,
 ) -> Result(String, Error) {
-  ["RENAME", key, new_key]
+  commands.rename(key, new_key)
   |> execute(conn, _, timeout)
   |> result.try(expect_simple_string)
 }
@@ -1277,7 +1264,7 @@ pub fn renamenx(
   new_key: String,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["RENAMENX", key, new_key]
+  commands.renamenx(key, new_key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1292,7 +1279,7 @@ pub fn persist(
   key: String,
   timeout: Int,
 ) -> Result(Bool, Error) {
-  ["PERSIST", key]
+  commands.persist(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer_boolean)
 }
@@ -1308,12 +1295,12 @@ pub fn ping(
   message: option.Option(String),
   timeout: Int,
 ) -> Result(String, Error) {
-  let #(message, expected) = case message {
-    option.None -> #(["PING"], "PONG")
-    option.Some(msg) -> #(["PING", msg], msg)
+  let expected = case message {
+    option.None -> "PONG"
+    option.Some(msg) -> msg
   }
 
-  message
+  commands.ping(message)
   |> execute(conn, _, timeout)
   |> result.try(fn(value) {
     case value {
@@ -1352,17 +1339,22 @@ pub fn expire(
   condition: option.Option(ExpireCondition),
   timeout: Int,
 ) -> Result(Bool, Error) {
-  let expiry_condition = case condition {
+  let expiry_condition = expire_condition_to_modifiers(condition)
+  commands.expire(key, ttl, expiry_condition)
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer_boolean)
+}
+
+fn expire_condition_to_modifiers(
+  condition: option.Option(ExpireCondition),
+) -> List(String) {
+  case condition {
     option.Some(IfNoExpiry) -> ["NX"]
     option.Some(IfHasExpiry) -> ["XX"]
     option.Some(IfGreaterThan) -> ["GT"]
     option.Some(IfLessThan) -> ["LT"]
     option.None -> []
   }
-
-  ["EXPIRE", key, int.to_string(ttl), ..expiry_condition]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_integer_boolean)
 }
 
 /// Set a TTL in milliseconds on a key, relative to the current time.
@@ -1382,15 +1374,8 @@ pub fn pexpire(
   condition: option.Option(ExpireCondition),
   timeout: Int,
 ) -> Result(Bool, Error) {
-  let expiry_condition = case condition {
-    option.Some(IfNoExpiry) -> ["NX"]
-    option.Some(IfHasExpiry) -> ["XX"]
-    option.Some(IfGreaterThan) -> ["GT"]
-    option.Some(IfLessThan) -> ["LT"]
-    option.None -> []
-  }
-
-  ["PEXPIRE", key, int.to_string(ttl), ..expiry_condition]
+  let expiry_condition = expire_condition_to_modifiers(condition)
+  commands.pexpire(key, ttl, expiry_condition)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer_boolean)
 }
@@ -1409,27 +1394,16 @@ pub fn pexpire(
 pub fn expireat(
   conn: Connection,
   key: String,
-  timestamp: timestamp.Timestamp,
+  ts: timestamp.Timestamp,
   condition: option.Option(ExpireCondition),
   timeout: Int,
 ) -> Result(Bool, Error) {
-  let expiry_condition = case condition {
-    option.Some(IfNoExpiry) -> ["NX"]
-    option.Some(IfHasExpiry) -> ["XX"]
-    option.Some(IfGreaterThan) -> ["GT"]
-    option.Some(IfLessThan) -> ["LT"]
-    option.None -> []
-  }
-
-  [
-    "EXPIREAT",
-    key,
-    timestamp
-      |> timestamp.to_unix_seconds
-      |> float.round
-      |> int.to_string,
-    ..expiry_condition
-  ]
+  let expiry_condition = expire_condition_to_modifiers(condition)
+  let unix_seconds =
+    ts
+    |> timestamp.to_unix_seconds
+    |> float.round
+  commands.expireat(key, unix_seconds, expiry_condition)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer_boolean)
 }
@@ -1453,7 +1427,7 @@ pub fn expiretime(
   key: String,
   timeout: Int,
 ) -> Result(Expiration, Error) {
-  ["EXPIRETIME", key]
+  commands.expiretime(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
   |> result.try(fn(value) {
@@ -1479,7 +1453,7 @@ pub fn pexpiretime(
   key: String,
   timeout: Int,
 ) -> Result(Expiration, Error) {
-  ["PEXPIRETIME", key]
+  commands.pexpiretime(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
   |> result.try(fn(value) {
@@ -1506,7 +1480,7 @@ pub fn lpush(
   values: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["LPUSH", key, ..values]
+  commands.lpush(key, values)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1522,7 +1496,7 @@ pub fn rpush(
   values: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["RPUSH", key, ..values]
+  commands.rpush(key, values)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1538,7 +1512,7 @@ pub fn lpushx(
   values: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["LPUSHX", key, ..values]
+  commands.lpushx(key, values)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1554,7 +1528,7 @@ pub fn rpushx(
   values: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["RPUSHX", key, ..values]
+  commands.rpushx(key, values)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1565,7 +1539,7 @@ pub fn rpushx(
 ///
 /// See the [Redis LLEN documentation](https://redis.io/commands/llen) for more details.
 pub fn llen(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
-  ["LLEN", key]
+  commands.llen(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1583,7 +1557,7 @@ pub fn lrange(
   end: Int,
   timeout: Int,
 ) -> Result(List(String), Error) {
-  ["LRANGE", key, int.to_string(start), int.to_string(end)]
+  commands.lrange(key, start, end)
   |> execute(conn, _, timeout)
   |> result.try(expect_bulk_string_array)
 }
@@ -1599,7 +1573,7 @@ pub fn lpop(
   count: Int,
   timeout: Int,
 ) -> Result(List(String), Error) {
-  ["LPOP", key, int.to_string(count)]
+  commands.lpop(key, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_bulk_string_array)
 }
@@ -1615,7 +1589,7 @@ pub fn rpop(
   count: Int,
   timeout: Int,
 ) -> Result(List(String), Error) {
-  ["RPOP", key, int.to_string(count)]
+  commands.rpop(key, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_bulk_string_array)
 }
@@ -1632,7 +1606,7 @@ pub fn lindex(
   index: Int,
   timeout: Int,
 ) -> Result(String, Error) {
-  ["LINDEX", key, int.to_string(index)]
+  commands.lindex(key, index)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_bulk_string)
 }
@@ -1653,7 +1627,7 @@ pub fn lrem(
   value: String,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["LREM", key, int.to_string(count), value]
+  commands.lrem(key, count, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1670,7 +1644,7 @@ pub fn lset(
   value: String,
   timeout: Int,
 ) -> Result(String, Error) {
-  ["LSET", key, int.to_string(index), value]
+  commands.lset(key, index, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_simple_string)
 }
@@ -1694,14 +1668,17 @@ pub fn linsert(
   value: String,
   timeout: Int,
 ) -> Result(Int, Error) {
-  let position = case position {
+  let position_str = insert_position_to_string(position)
+  commands.linsert(key, position_str, pivot, value)
+  |> execute(conn, _, timeout)
+  |> result.try(expect_integer)
+}
+
+fn insert_position_to_string(position: InsertPosition) -> String {
+  case position {
     Before -> "BEFORE"
     After -> "AFTER"
   }
-
-  ["LINSERT", key, position, pivot, value]
-  |> execute(conn, _, timeout)
-  |> result.try(expect_integer)
 }
 
 // ------------------------- //
@@ -1720,7 +1697,7 @@ pub fn sadd(
   values: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["SADD", key, ..values]
+  commands.sadd(key, values)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1731,7 +1708,7 @@ pub fn sadd(
 ///
 /// See the [Redis SCARD documentation](https://redis.io/commands/scard) for more details.
 pub fn scard(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
-  ["SCARD", key]
+  commands.scard(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1748,7 +1725,7 @@ pub fn sismember(
   value: String,
   timeout: Int,
 ) -> Result(Bool, Error) {
-  ["SISMEMBER", key, value]
+  commands.sismember(key, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer_boolean)
 }
@@ -1766,7 +1743,7 @@ pub fn smembers(
   key: String,
   timeout: Int,
 ) -> Result(set.Set(String), Error) {
-  ["SMEMBERS", key]
+  commands.smembers(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_bulk_string_set)
 }
@@ -1788,12 +1765,7 @@ pub fn sscan(
   count: Int,
   timeout: Int,
 ) -> Result(#(List(String), Int), Error) {
-  let modifiers = case pattern_filter {
-    option.Some(pattern) -> ["MATCH", pattern, "COUNT", int.to_string(count)]
-    option.None -> ["COUNT", int.to_string(count)]
-  }
-
-  ["SSCAN", key, int.to_string(cursor), ..modifiers]
+  commands.sscan(key, cursor, pattern_filter, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_array)
 }
@@ -1872,25 +1844,9 @@ pub fn zadd(
   return_changed: Bool,
   timeout: Int,
 ) -> Result(Int, Error) {
-  let changed_modifier = case return_changed {
-    True -> ["CH"]
-    False -> []
-  }
-  let modifiers = case condition {
-    IfNotExistsInSet -> ["NX", ..changed_modifier]
-    IfExistsInSet -> ["XX", ..changed_modifier]
-    IfScoreLessThanExisting -> ["XX", "LT", ..changed_modifier]
-    IfScoreGreaterThanExisting -> ["XX", "GT", ..changed_modifier]
-  }
-  let command =
-    list.append(
-      modifiers,
-      list.flat_map(members, fn(member) {
-        [score_to_string(member.1), member.0]
-      }),
-    )
-
-  ["ZADD", key, ..command]
+  let modifiers_and_members =
+    zadd_build_modifiers_and_members(members, condition, return_changed)
+  commands.zadd(key, modifiers_and_members)
   |> execute(conn, _, timeout)
   |> result.try(fn(value) {
     case expect_nullable_integer(value) {
@@ -1901,6 +1857,27 @@ pub fn zadd(
       Error(error) -> Error(error)
     }
   })
+}
+
+fn zadd_build_modifiers_and_members(
+  members: List(#(String, Score)),
+  condition: ZAddCondition,
+  return_changed: Bool,
+) -> List(String) {
+  let changed_modifier = case return_changed {
+    True -> ["CH"]
+    False -> []
+  }
+  let modifiers = case condition {
+    IfNotExistsInSet -> ["NX", ..changed_modifier]
+    IfExistsInSet -> ["XX", ..changed_modifier]
+    IfScoreLessThanExisting -> ["XX", "LT", ..changed_modifier]
+    IfScoreGreaterThanExisting -> ["XX", "GT", ..changed_modifier]
+  }
+  list.append(
+    modifiers,
+    list.flat_map(members, fn(member) { [score_to_string(member.1), member.0] }),
+  )
 }
 
 /// Increment the score of a member in a sorted set.
@@ -1916,7 +1893,7 @@ pub fn zincrby(
   delta: Score,
   timeout: Int,
 ) -> Result(Float, Error) {
-  ["ZINCRBY", key, score_to_string(delta), member]
+  commands.zincrby(key, score_to_string(delta), member)
   |> execute(conn, _, timeout)
   |> result.try(expect_float)
 }
@@ -1927,7 +1904,7 @@ pub fn zincrby(
 ///
 /// See the [Redis ZCARD documentation](https://redis.io/commands/zcard) for more details.
 pub fn zcard(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
-  ["ZCARD", key]
+  commands.zcard(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1945,7 +1922,7 @@ pub fn zcount(
   max: Score,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["ZCOUNT", key, score_to_string(min), score_to_string(max)]
+  commands.zcount(key, score_to_string(min), score_to_string(max))
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -1961,7 +1938,7 @@ pub fn zscore(
   member: String,
   timeout: Int,
 ) -> Result(Float, Error) {
-  ["ZSCORE", key, member]
+  commands.zscore(key, member)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_float)
 }
@@ -1983,12 +1960,7 @@ pub fn zscan(
   count: Int,
   timeout: Int,
 ) -> Result(#(List(#(String, Score)), Int), Error) {
-  let modifiers = case pattern_filter {
-    option.Some(pattern) -> ["MATCH", pattern, "COUNT", int.to_string(count)]
-    option.None -> ["COUNT", int.to_string(count)]
-  }
-
-  ["ZSCAN", key, int.to_string(cursor), ..modifiers]
+  commands.zscan(key, cursor, pattern_filter, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_sorted_set_member_array)
 }
@@ -2005,7 +1977,7 @@ pub fn zrem(
   members: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["ZREM", key, ..members]
+  commands.zrem(key, members)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -2022,7 +1994,7 @@ pub fn zrandmember(
   count: Int,
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
-  ["ZRANDMEMBER", key, int.to_string(count), "WITHSCORES"]
+  commands.zrandmember(key, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
@@ -2039,7 +2011,7 @@ pub fn zpopmin(
   count: Int,
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
-  ["ZPOPMIN", key, int.to_string(count)]
+  commands.zpopmin(key, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
@@ -2056,7 +2028,7 @@ pub fn zpopmax(
   count: Int,
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
-  ["ZPOPMAX", key, int.to_string(count)]
+  commands.zpopmax(key, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
@@ -2097,13 +2069,12 @@ pub fn zrange(
     True -> ["REV", "WITHSCORES"]
     False -> ["WITHSCORES"]
   }
-  [
-    "ZRANGE",
+  commands.zrange(
     key,
     numeric_bound_to_string(start, int.to_string),
     numeric_bound_to_string(stop, int.to_string),
-    ..modifiers
-  ]
+    modifiers,
+  )
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
@@ -2126,18 +2097,15 @@ pub fn zrange_byscore(
   timeout: Int,
 ) -> Result(List(#(String, Score)), Error) {
   let modifiers = case reverse {
-    True -> ["REV", "WITHSCORES"]
-    False -> ["WITHSCORES"]
+    True -> ["BYSCORE", "REV", "WITHSCORES"]
+    False -> ["BYSCORE", "WITHSCORES"]
   }
-
-  [
-    "ZRANGE",
+  commands.zrange(
     key,
     numeric_bound_to_string(start, score_to_string),
     numeric_bound_to_string(stop, score_to_string),
-    "BYSCORE",
-    ..modifiers
-  ]
+    modifiers,
+  )
   |> execute(conn, _, timeout)
   |> result.try(expect_sorted_set_member_array)
 }
@@ -2177,18 +2145,15 @@ pub fn zrange_bylex(
   timeout: Int,
 ) -> Result(List(String), Error) {
   let modifiers = case reverse {
-    True -> ["REV"]
-    False -> []
+    True -> ["BYLEX", "REV"]
+    False -> ["BYLEX"]
   }
-
-  [
-    "ZRANGE",
+  commands.zrange(
     key,
     lex_bound_to_string(start),
     lex_bound_to_string(stop),
-    "BYLEX",
-    ..modifiers
-  ]
+    modifiers,
+  )
   |> execute(conn, _, timeout)
   |> result.try(expect_bulk_string_array)
 }
@@ -2205,7 +2170,7 @@ pub fn zrank(
   member: String,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["ZRANK", key, member]
+  commands.zrank(key, member)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_integer)
 }
@@ -2224,7 +2189,7 @@ pub fn zrank_withscore(
   member: String,
   timeout: Int,
 ) -> Result(#(Int, Score), Error) {
-  ["ZRANK", key, member, "WITHSCORE"]
+  commands.zrank_withscore(key, member)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_rank_and_score)
 }
@@ -2242,7 +2207,7 @@ pub fn zrevrank(
   member: String,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["ZREVRANK", key, member]
+  commands.zrevrank(key, member)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_integer)
 }
@@ -2262,7 +2227,7 @@ pub fn zrevrank_withscore(
   member: String,
   timeout: Int,
 ) -> Result(#(Int, Score), Error) {
-  ["ZREVRANK", key, member, "WITHSCORE"]
+  commands.zrevrank_withscore(key, member)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_rank_and_score)
 }
@@ -2283,12 +2248,7 @@ pub fn hset(
   values: dict.Dict(String, String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  let values =
-    values
-    |> dict.to_list
-    |> list.flat_map(fn(item) { [item.0, item.1] })
-
-  ["HSET", key, ..values]
+  commands.hset(key, values)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -2306,7 +2266,7 @@ pub fn hsetnx(
   value: String,
   timeout: Int,
 ) -> Result(Bool, Error) {
-  ["HSETNX", key, field, value]
+  commands.hsetnx(key, field, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer_boolean)
 }
@@ -2317,7 +2277,7 @@ pub fn hsetnx(
 ///
 /// See the [Redis HLEN documentation](https://redis.io/commands/hlen) for more details.
 pub fn hlen(conn: Connection, key: String, timeout: Int) -> Result(Int, Error) {
-  ["HLEN", key]
+  commands.hlen(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -2332,7 +2292,7 @@ pub fn hkeys(
   key: String,
   timeout: Int,
 ) -> Result(List(String), Error) {
-  ["HKEYS", key]
+  commands.hkeys(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_bulk_string_array)
 }
@@ -2348,7 +2308,7 @@ pub fn hget(
   field: String,
   timeout: Int,
 ) -> Result(String, Error) {
-  ["HGET", key, field]
+  commands.hget(key, field)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_bulk_string)
 }
@@ -2365,7 +2325,7 @@ pub fn hgetall(
   key: String,
   timeout: Int,
 ) -> Result(dict.Dict(resp.Value, resp.Value), Error) {
-  ["HGETALL", key]
+  commands.hgetall(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_map)
 }
@@ -2382,7 +2342,7 @@ pub fn hmget(
   fields: List(String),
   timeout: Int,
 ) -> Result(List(Result(String, Error)), Error) {
-  ["HMGET", key, ..fields]
+  commands.hmget(key, fields)
   |> execute(conn, _, timeout)
   |> result.try(expect_nullable_bulk_string_array)
 }
@@ -2398,7 +2358,7 @@ pub fn hstrlen(
   field: String,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["HSTRLEN", key, field]
+  commands.hstrlen(key, field)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -2413,7 +2373,7 @@ pub fn hvals(
   key: String,
   timeout: Int,
 ) -> Result(List(String), Error) {
-  ["HVALS", key]
+  commands.hvals(key)
   |> execute(conn, _, timeout)
   |> result.try(expect_bulk_string_array)
 }
@@ -2430,7 +2390,7 @@ pub fn hdel(
   fields: List(String),
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["HDEL", key, ..fields]
+  commands.hdel(key, fields)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -2447,7 +2407,7 @@ pub fn hexists(
   field: String,
   timeout: Int,
 ) -> Result(Bool, Error) {
-  ["HEXISTS", key, field]
+  commands.hexists(key, field)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer_boolean)
 }
@@ -2465,7 +2425,7 @@ pub fn hincrby(
   value: Int,
   timeout: Int,
 ) -> Result(Int, Error) {
-  ["HINCRBY", key, field, int.to_string(value)]
+  commands.hincrby(key, field, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_integer)
 }
@@ -2483,7 +2443,7 @@ pub fn hincrbyfloat(
   value: Float,
   timeout: Int,
 ) -> Result(Float, Error) {
-  ["HINCRBYFLOAT", key, field, float.to_string(value)]
+  commands.hincrbyfloat(key, field, value)
   |> execute(conn, _, timeout)
   |> result.try(expect_float)
 }
@@ -2505,11 +2465,7 @@ pub fn hscan(
   count: Int,
   timeout: Int,
 ) -> Result(#(List(#(String, String)), Int), Error) {
-  let modifiers = case pattern_filter {
-    option.Some(pattern) -> ["MATCH", pattern, "COUNT", int.to_string(count)]
-    option.None -> ["COUNT", int.to_string(count)]
-  }
-  ["HSCAN", key, int.to_string(cursor), ..modifiers]
+  commands.hscan(key, cursor, pattern_filter, count)
   |> execute(conn, _, timeout)
   |> result.try(expect_cursor_and_hash_field_array)
 }
