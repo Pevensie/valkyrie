@@ -13,6 +13,7 @@ import gleeunit
 import gleeunit/should
 import mug
 import valkyrie
+import valkyrie/pipeline
 import valkyrie/resp
 
 pub fn main() {
@@ -1917,4 +1918,44 @@ pub fn edge_case_operations_test() {
   let assert Ok(100) =
     valkyrie.sadd(conn, "test:large_set", large_set_members, 5000)
   let assert Ok(100) = valkyrie.scard(conn, "test:large_set", 1000)
+}
+
+// ------------------------------- //
+// ----- Pipeline functions ------ //
+// ------------------------------- //
+
+pub fn pipeline_returns_all_results_test() {
+  use conn <- get_test_conn()
+
+  // Set up test data
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:pipeline:key1", "value1", option.None, 1000)
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:pipeline:key2", "value2", option.None, 1000)
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:pipeline:key3", "value3", option.None, 1000)
+
+  // Create pipeline with multiple commands
+  let p =
+    pipeline.new()
+    |> pipeline.keys("test:pipeline:*")
+    |> pipeline.keys("test:pipeline:key1")
+    |> pipeline.keys("nonexistent:*")
+
+  // Execute pipeline and verify we get results for all 3 commands
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+
+  // Should have exactly 3 results (one for each command)
+  results |> list.length |> should.equal(3)
+
+  // First result: keys matching "test:pipeline:*" - should be an array with 3 keys
+  let assert [
+    resp.Array(first_keys),
+    resp.Array(second_keys),
+    resp.Array(third_keys),
+  ] = results
+
+  first_keys |> list.length |> should.equal(3)
+  second_keys |> list.length |> should.equal(1)
+  third_keys |> list.length |> should.equal(0)
 }
