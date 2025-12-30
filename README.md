@@ -50,10 +50,48 @@ pub fn main() {
   let conn = valkyrie.named_connection(pool_name)
 
   // Use the connection.
-  let assert Ok(_) = echo valkyrie.set(conn, "key", "value", option.None, 1000)
-  let assert Ok(_) = echo valkyrie.get(conn, "key", 1000)
+  let assert Ok(_) = valkyrie.set(conn, "key", "value", option.None, 1000)
+  let assert Ok("value") = valkyrie.get(conn, "key", 1000)
+}
+```
 
-  // Do more stuff...
+### Pipelines and Transactions
+
+Valkyrie supports pipelining multiple commands to reduce round-trips to the server.
+Use `pipeline.exec` to execute commands in a pipeline, or `pipeline.exec_transaction`
+to wrap commands in a `MULTI`/`EXEC` transaction for atomic execution.
+
+```gleam
+import gleam/list
+import valkyrie
+import valkyrie/pipeline
+import valkyrie/resp
+
+pub fn main() {
+  // ... set up connection as above ...
+
+  // Execute multiple commands in a single round-trip
+  let assert Ok(results) =
+    pipeline.new()
+    |> pipeline.set("counter", "0", option.None)
+    |> pipeline.incr("counter")
+    |> pipeline.incr("counter")
+    |> pipeline.incr("counter")
+    |> pipeline.get("counter")
+    |> pipeline.exec(conn, 1000)
+
+  // Results are returned in order
+  let assert Ok(resp.BulkString("3")) = list.last(results)
+
+  // Or use a transaction for atomic execution
+  let assert Ok(tx_results) =
+    pipeline.new()
+    |> pipeline.incr("counter")
+    |> pipeline.incr("counter")
+    |> pipeline.exec_transaction(conn, 1000)
+
+  // Transaction results contain only the command outputs
+  let assert [resp.Integer(4), resp.Integer(5)] = tx_results
 }
 ```
 

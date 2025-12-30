@@ -31,22 +31,31 @@ pub fn main() {
   let conn = valkyrie.named_connection(pool_name)
 
   // Use the connection.
-  let assert Ok(_) = echo valkyrie.set(conn, "key", "value", option.None, 1000)
-  let assert Ok("value") = echo valkyrie.get(conn, "key", 1000)
-  // Do more stuff...
+  let assert Ok(_) = valkyrie.set(conn, "key", "value", option.None, 1000)
+  let assert Ok("value") = valkyrie.get(conn, "key", 1000)
 
+  // Execute multiple commands in a single round-trip
   let assert Ok(results) =
     pipeline.new()
     |> pipeline.set("counter", "0", option.None)
     |> pipeline.incr("counter")
     |> pipeline.incr("counter")
     |> pipeline.incr("counter")
-    |> pipeline.incr("counter")
-    |> pipeline.incr("counter")
     |> pipeline.get("counter")
+    |> pipeline.exec(conn, 1000)
+
+  // Results are returned in order
+  let assert Ok(resp.BulkString("3")) = list.last(results)
+  io.println("Pipeline: Incremented counter to 3")
+
+  // Or use a transaction for atomic execution
+  let assert Ok(tx_results) =
+    pipeline.new()
+    |> pipeline.incr("counter")
+    |> pipeline.incr("counter")
     |> pipeline.exec_transaction(conn, 1000)
 
-  let assert Ok(resp.BulkString(value)) = list.last(results)
-
-  io.println("Incremented count to " <> value <> " in a transaction!")
+  // Transaction results contain only the command outputs
+  let assert [resp.Integer(4), resp.Integer(5)] = tx_results
+  io.println("Transaction: Incremented counter to 5")
 }
