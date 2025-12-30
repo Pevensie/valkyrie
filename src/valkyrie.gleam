@@ -1077,7 +1077,10 @@ pub fn set(
   |> result.try(expect_any_nullable_string)
 }
 
-fn set_options_to_modifiers(options: option.Option(SetOptions)) -> List(String) {
+@internal
+pub fn set_options_to_modifiers(
+  options: option.Option(SetOptions),
+) -> List(String) {
   options
   |> option.map(fn(options) {
     let modifiers = case options.expiry_option {
@@ -1345,7 +1348,8 @@ pub fn expire(
   |> result.try(expect_integer_boolean)
 }
 
-fn expire_condition_to_modifiers(
+@internal
+pub fn expire_condition_to_modifiers(
   condition: option.Option(ExpireCondition),
 ) -> List(String) {
   case condition {
@@ -1674,7 +1678,8 @@ pub fn linsert(
   |> result.try(expect_integer)
 }
 
-fn insert_position_to_string(position: InsertPosition) -> String {
+@internal
+pub fn insert_position_to_string(position: InsertPosition) -> String {
   case position {
     Before -> "BEFORE"
     After -> "AFTER"
@@ -1780,7 +1785,8 @@ pub type Score {
   NegativeInfinity
 }
 
-fn score_to_string(score) {
+@internal
+pub fn score_to_string(score: Score) -> String {
   case score {
     Infinity -> "+inf"
     NegativeInfinity -> "-inf"
@@ -1859,7 +1865,8 @@ pub fn zadd(
   })
 }
 
-fn zadd_build_modifiers_and_members(
+@internal
+pub fn zadd_build_modifiers_and_members(
   members: List(#(String, Score)),
   condition: ZAddCondition,
   return_changed: Bool,
@@ -2038,7 +2045,8 @@ pub type NumericBound(a) {
   NumericExclusive(a)
 }
 
-fn numeric_bound_to_string(
+@internal
+pub fn numeric_bound_to_string(
   bound: NumericBound(a),
   to_string_func: fn(a) -> String,
 ) -> String {
@@ -2117,7 +2125,8 @@ pub type LexBound {
   LexNegativeInfinity
 }
 
-fn lex_bound_to_string(bound: LexBound) -> String {
+@internal
+pub fn lex_bound_to_string(bound: LexBound) -> String {
   case bound {
     LexInclusive(value) -> "[" <> value
     LexExclusive(value) -> "(" <> value

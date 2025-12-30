@@ -1,14 +1,9 @@
 import gleam/dict
-import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option
 import gleam/result
-import valkyrie.{
-  type Connection, type ExpireCondition, type InsertPosition, type KeyType,
-  type LexBound, type NumericBound, type Score, type SetOptions,
-  type ZAddCondition, RespError, execute_bits, key_type_to_string,
-}
+import valkyrie
 import valkyrie/internal/commands
 import valkyrie/resp
 
@@ -31,11 +26,11 @@ pub fn new() -> Pipeline {
 ///
 /// Note: KeyDB wraps pipeline results in an outer array, while Redis returns
 /// a flat list. You may need to handle this difference in your application.
-pub fn exec(pipeline: Pipeline, conn: Connection, timeout: Int) {
+pub fn exec(pipeline: Pipeline, conn: valkyrie.Connection, timeout: Int) {
   case pipeline.commands {
     [] -> Ok([])
     _ ->
-      execute_bits(
+      valkyrie.execute_bits(
         conn,
         list.reverse(pipeline.commands) |> resp.encode_pipeline,
         timeout,
@@ -47,13 +42,17 @@ pub fn exec(pipeline: Pipeline, conn: Connection, timeout: Int) {
 ///
 /// Returns a list of `resp.Value` for each command in the order they were added.
 /// Returns `Ok([])` immediately if the pipeline is empty.
-pub fn exec_transaction(pipeline: Pipeline, conn: Connection, timeout: Int) {
+pub fn exec_transaction(
+  pipeline: Pipeline,
+  conn: valkyrie.Connection,
+  timeout: Int,
+) {
   case pipeline.commands {
     [] -> Ok([])
     _ -> {
       let with_exec = [["EXEC"], ..pipeline.commands]
       let with_multi = [["MULTI"], ..list.reverse(with_exec)]
-      use results <- result.try(execute_bits(
+      use results <- result.try(valkyrie.execute_bits(
         conn,
         resp.encode_pipeline(with_multi),
         timeout,
@@ -61,7 +60,7 @@ pub fn exec_transaction(pipeline: Pipeline, conn: Connection, timeout: Int) {
 
       case list.last(results) {
         Ok(resp.Array(exec_results)) -> Ok(exec_results)
-        _ -> Error(RespError("Expected EXEC response to be an array"))
+        _ -> Error(valkyrie.RespError("Expected EXEC response to be an array"))
       }
     }
   }
@@ -82,14 +81,14 @@ pub fn scan(
   cursor: Int,
   pattern_filter: option.Option(String),
   count: Int,
-  key_type_filter: option.Option(KeyType),
+  key_type_filter: option.Option(valkyrie.KeyType),
 ) -> Pipeline {
   let command =
     commands.scan(
       cursor,
       pattern_filter,
       count,
-      option.map(key_type_filter, key_type_to_string),
+      option.map(key_type_filter, valkyrie.key_type_to_string),
     )
   Pipeline(commands: [command, ..pipeline.commands])
 }
@@ -119,44 +118,10 @@ pub fn set(
   pipeline: Pipeline,
   key: String,
   value: String,
-  options: option.Option(SetOptions),
+  options: option.Option(valkyrie.SetOptions),
 ) -> Pipeline {
-  let modifiers = set_options_to_modifiers(options)
+  let modifiers = valkyrie.set_options_to_modifiers(options)
   Pipeline(commands: [commands.set(key, value, modifiers), ..pipeline.commands])
-}
-
-fn set_options_to_modifiers(options: option.Option(SetOptions)) -> List(String) {
-  options
-  |> option.map(fn(options) {
-    let modifiers = case options.expiry_option {
-      option.Some(valkyrie.KeepTtl) -> ["KEEPTTL"]
-      option.Some(valkyrie.ExpirySeconds(value)) -> ["EX", int.to_string(value)]
-      option.Some(valkyrie.ExpiryMilliseconds(value)) -> [
-        "PX",
-        int.to_string(value),
-      ]
-      option.Some(valkyrie.ExpiresAtUnixSeconds(value)) -> [
-        "EXAT",
-        int.to_string(value),
-      ]
-      option.Some(valkyrie.ExpiresAtUnixMilliseconds(value)) -> [
-        "PXAT",
-        int.to_string(value),
-      ]
-      option.None -> []
-    }
-    let modifiers = case options.return_old {
-      True -> ["GET", ..modifiers]
-      False -> modifiers
-    }
-    let modifiers = case options.existence_condition {
-      option.Some(valkyrie.IfNotExists) -> ["NX", ..modifiers]
-      option.Some(valkyrie.IfExists) -> ["XX", ..modifiers]
-      option.None -> modifiers
-    }
-    modifiers
-  })
-  |> option.unwrap([])
 }
 
 /// Adds MSET to the pipeline. See [`valkyrie.mset`](/valkyrie.html#mset) for more details.
@@ -229,25 +194,13 @@ pub fn expire(
   pipeline: Pipeline,
   key: String,
   ttl: Int,
-  condition: option.Option(ExpireCondition),
+  condition: option.Option(valkyrie.ExpireCondition),
 ) -> Pipeline {
-  let expiry_condition = expire_condition_to_modifiers(condition)
+  let expiry_condition = valkyrie.expire_condition_to_modifiers(condition)
   Pipeline(commands: [
     commands.expire(key, ttl, expiry_condition),
     ..pipeline.commands
   ])
-}
-
-fn expire_condition_to_modifiers(
-  condition: option.Option(ExpireCondition),
-) -> List(String) {
-  case condition {
-    option.Some(valkyrie.IfNoExpiry) -> ["NX"]
-    option.Some(valkyrie.IfHasExpiry) -> ["XX"]
-    option.Some(valkyrie.IfGreaterThan) -> ["GT"]
-    option.Some(valkyrie.IfLessThan) -> ["LT"]
-    option.None -> []
-  }
 }
 
 /// Adds PEXPIRE to the pipeline. See [`valkyrie.pexpire`](/valkyrie.html#pexpire) for more details.
@@ -255,9 +208,9 @@ pub fn pexpire(
   pipeline: Pipeline,
   key: String,
   ttl: Int,
-  condition: option.Option(ExpireCondition),
+  condition: option.Option(valkyrie.ExpireCondition),
 ) -> Pipeline {
-  let expiry_condition = expire_condition_to_modifiers(condition)
+  let expiry_condition = valkyrie.expire_condition_to_modifiers(condition)
   Pipeline(commands: [
     commands.pexpire(key, ttl, expiry_condition),
     ..pipeline.commands
@@ -269,9 +222,9 @@ pub fn expireat(
   pipeline: Pipeline,
   key: String,
   unix_seconds: Int,
-  condition: option.Option(ExpireCondition),
+  condition: option.Option(valkyrie.ExpireCondition),
 ) -> Pipeline {
-  let expiry_condition = expire_condition_to_modifiers(condition)
+  let expiry_condition = valkyrie.expire_condition_to_modifiers(condition)
   Pipeline(commands: [
     commands.expireat(key, unix_seconds, expiry_condition),
     ..pipeline.commands
@@ -361,22 +314,15 @@ pub fn lset(
 pub fn linsert(
   pipeline: Pipeline,
   key: String,
-  position: InsertPosition,
+  position: valkyrie.InsertPosition,
   pivot: String,
   value: String,
 ) -> Pipeline {
-  let position_str = insert_position_to_string(position)
+  let position_str = valkyrie.insert_position_to_string(position)
   Pipeline(commands: [
     commands.linsert(key, position_str, pivot, value),
     ..pipeline.commands
   ])
-}
-
-fn insert_position_to_string(position: InsertPosition) -> String {
-  case position {
-    valkyrie.Before -> "BEFORE"
-    valkyrie.After -> "AFTER"
-  }
 }
 
 // ------------------------- //
@@ -425,45 +371,20 @@ pub fn sscan(
 pub fn zadd(
   pipeline: Pipeline,
   key: String,
-  members: List(#(String, Score)),
-  condition: ZAddCondition,
+  members: List(#(String, valkyrie.Score)),
+  condition: valkyrie.ZAddCondition,
   return_changed: Bool,
 ) -> Pipeline {
   let modifiers_and_members =
-    zadd_build_modifiers_and_members(members, condition, return_changed)
+    valkyrie.zadd_build_modifiers_and_members(
+      members,
+      condition,
+      return_changed,
+    )
   Pipeline(commands: [
     commands.zadd(key, modifiers_and_members),
     ..pipeline.commands
   ])
-}
-
-fn zadd_build_modifiers_and_members(
-  members: List(#(String, Score)),
-  condition: ZAddCondition,
-  return_changed: Bool,
-) -> List(String) {
-  let changed_modifier = case return_changed {
-    True -> ["CH"]
-    False -> []
-  }
-  let modifiers = case condition {
-    valkyrie.IfNotExistsInSet -> ["NX", ..changed_modifier]
-    valkyrie.IfExistsInSet -> ["XX", ..changed_modifier]
-    valkyrie.IfScoreLessThanExisting -> ["XX", "LT", ..changed_modifier]
-    valkyrie.IfScoreGreaterThanExisting -> ["XX", "GT", ..changed_modifier]
-  }
-  list.append(
-    modifiers,
-    list.flat_map(members, fn(member) { [score_to_string(member.1), member.0] }),
-  )
-}
-
-fn score_to_string(score: Score) -> String {
-  case score {
-    valkyrie.Infinity -> "+inf"
-    valkyrie.NegativeInfinity -> "-inf"
-    valkyrie.Double(value) -> float.to_string(value)
-  }
 }
 
 /// Adds ZINCRBY to the pipeline. See [`valkyrie.zincrby`](/valkyrie.html#zincrby) for more details.
@@ -471,10 +392,10 @@ pub fn zincrby(
   pipeline: Pipeline,
   key: String,
   member: String,
-  delta: Score,
+  delta: valkyrie.Score,
 ) -> Pipeline {
   Pipeline(commands: [
-    commands.zincrby(key, score_to_string(delta), member),
+    commands.zincrby(key, valkyrie.score_to_string(delta), member),
     ..pipeline.commands
   ])
 }
@@ -488,11 +409,15 @@ pub fn zcard(pipeline: Pipeline, key: String) -> Pipeline {
 pub fn zcount(
   pipeline: Pipeline,
   key: String,
-  min: Score,
-  max: Score,
+  min: valkyrie.Score,
+  max: valkyrie.Score,
 ) -> Pipeline {
   Pipeline(commands: [
-    commands.zcount(key, score_to_string(min), score_to_string(max)),
+    commands.zcount(
+      key,
+      valkyrie.score_to_string(min),
+      valkyrie.score_to_string(max),
+    ),
     ..pipeline.commands
   ])
 }
@@ -540,8 +465,8 @@ pub fn zpopmax(pipeline: Pipeline, key: String, count: Int) -> Pipeline {
 pub fn zrange(
   pipeline: Pipeline,
   key: String,
-  start: NumericBound(Int),
-  stop: NumericBound(Int),
+  start: valkyrie.NumericBound(Int),
+  stop: valkyrie.NumericBound(Int),
   reverse: Bool,
 ) -> Pipeline {
   let modifiers = case reverse {
@@ -551,30 +476,20 @@ pub fn zrange(
   Pipeline(commands: [
     commands.zrange(
       key,
-      numeric_bound_to_string(start, int.to_string),
-      numeric_bound_to_string(stop, int.to_string),
+      valkyrie.numeric_bound_to_string(start, int.to_string),
+      valkyrie.numeric_bound_to_string(stop, int.to_string),
       modifiers,
     ),
     ..pipeline.commands
   ])
 }
 
-fn numeric_bound_to_string(
-  bound: NumericBound(a),
-  to_string_func: fn(a) -> String,
-) -> String {
-  case bound {
-    valkyrie.NumericInclusive(value) -> to_string_func(value)
-    valkyrie.NumericExclusive(value) -> "(" <> to_string_func(value)
-  }
-}
-
 /// Adds ZRANGE BYSCORE to the pipeline. See [`valkyrie.zrange_byscore`](/valkyrie.html#zrange_byscore) for more details.
 pub fn zrange_byscore(
   pipeline: Pipeline,
   key: String,
-  start: NumericBound(Score),
-  stop: NumericBound(Score),
+  start: valkyrie.NumericBound(valkyrie.Score),
+  stop: valkyrie.NumericBound(valkyrie.Score),
   reverse: Bool,
 ) -> Pipeline {
   let modifiers = case reverse {
@@ -584,8 +499,8 @@ pub fn zrange_byscore(
   Pipeline(commands: [
     commands.zrange(
       key,
-      numeric_bound_to_string(start, score_to_string),
-      numeric_bound_to_string(stop, score_to_string),
+      valkyrie.numeric_bound_to_string(start, valkyrie.score_to_string),
+      valkyrie.numeric_bound_to_string(stop, valkyrie.score_to_string),
       modifiers,
     ),
     ..pipeline.commands
@@ -596,8 +511,8 @@ pub fn zrange_byscore(
 pub fn zrange_bylex(
   pipeline: Pipeline,
   key: String,
-  start: LexBound,
-  stop: LexBound,
+  start: valkyrie.LexBound,
+  stop: valkyrie.LexBound,
   reverse: Bool,
 ) -> Pipeline {
   let modifiers = case reverse {
@@ -607,21 +522,12 @@ pub fn zrange_bylex(
   Pipeline(commands: [
     commands.zrange(
       key,
-      lex_bound_to_string(start),
-      lex_bound_to_string(stop),
+      valkyrie.lex_bound_to_string(start),
+      valkyrie.lex_bound_to_string(stop),
       modifiers,
     ),
     ..pipeline.commands
   ])
-}
-
-fn lex_bound_to_string(bound: LexBound) -> String {
-  case bound {
-    valkyrie.LexInclusive(value) -> "[" <> value
-    valkyrie.LexExclusive(value) -> "(" <> value
-    valkyrie.LexPositiveInfinity -> "+"
-    valkyrie.LexNegativeInfinity -> "-"
-  }
 }
 
 /// Adds ZRANK to the pipeline. See [`valkyrie.zrank`](/valkyrie.html#zrank) for more details.
