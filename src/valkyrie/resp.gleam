@@ -80,10 +80,7 @@ pub fn encode_command(parts: List(String)) {
 @internal
 pub fn encode_pipeline(commands: List(List(String))) {
   commands
-  |> list.map(fn(command) {
-    encode_command(command)
-    |> bit_array.append(bit_array.from_string("\r\n"))
-  })
+  |> list.map(encode_command)
   |> bit_array.concat
 }
 
