@@ -1959,3 +1959,388 @@ pub fn pipeline_returns_all_results_test() {
   second_keys |> list.length |> should.equal(1)
   third_keys |> list.length |> should.equal(0)
 }
+
+pub fn pipeline_set_get_test() {
+  use conn <- get_test_conn()
+
+  // Test SET and GET operations in a pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.set("test:pipe:a", "value_a", option.None)
+    |> pipeline.set("test:pipe:b", "value_b", option.None)
+    |> pipeline.get("test:pipe:a")
+    |> pipeline.get("test:pipe:b")
+    |> pipeline.get("test:pipe:nonexistent")
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(5)
+
+  let assert [
+    resp.SimpleString("OK"),
+    resp.SimpleString("OK"),
+    resp.BulkString("value_a"),
+    resp.BulkString("value_b"),
+    resp.Null,
+  ] = results
+}
+
+pub fn pipeline_incr_decr_test() {
+  use conn <- get_test_conn()
+
+  // Test numeric operations in a pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.incr("test:pipe:counter")
+    |> pipeline.incr("test:pipe:counter")
+    |> pipeline.incrby("test:pipe:counter", 10)
+    |> pipeline.decr("test:pipe:counter")
+    |> pipeline.decrby("test:pipe:counter", 5)
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(5)
+
+  let assert [
+    resp.Integer(1),
+    resp.Integer(2),
+    resp.Integer(12),
+    resp.Integer(11),
+    resp.Integer(6),
+  ] = results
+}
+
+pub fn pipeline_list_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test list operations in a pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.rpush("test:pipe:list", ["a", "b", "c"])
+    |> pipeline.lpush("test:pipe:list", ["z"])
+    |> pipeline.llen("test:pipe:list")
+    |> pipeline.lrange("test:pipe:list", 0, -1)
+    |> pipeline.lindex("test:pipe:list", 0)
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(5)
+
+  let assert [
+    resp.Integer(3),
+    resp.Integer(4),
+    resp.Integer(4),
+    resp.Array([
+      resp.BulkString("z"),
+      resp.BulkString("a"),
+      resp.BulkString("b"),
+      resp.BulkString("c"),
+    ]),
+    resp.BulkString("z"),
+  ] = results
+}
+
+pub fn pipeline_set_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test set operations in a pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.sadd("test:pipe:set", ["apple", "banana", "cherry"])
+    |> pipeline.scard("test:pipe:set")
+    |> pipeline.sismember("test:pipe:set", "banana")
+    |> pipeline.sismember("test:pipe:set", "grape")
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(4)
+
+  let assert [
+    resp.Integer(3),
+    resp.Integer(3),
+    resp.Integer(1),
+    resp.Integer(0),
+  ] = results
+}
+
+pub fn pipeline_hash_operations_test() {
+  use conn <- get_test_conn()
+
+  let hash_values =
+    dict.new()
+    |> dict.insert("field1", "value1")
+    |> dict.insert("field2", "value2")
+
+  // Test hash operations in a pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.hset("test:pipe:hash", hash_values)
+    |> pipeline.hget("test:pipe:hash", "field1")
+    |> pipeline.hget("test:pipe:hash", "field2")
+    |> pipeline.hlen("test:pipe:hash")
+    |> pipeline.hexists("test:pipe:hash", "field1")
+    |> pipeline.hexists("test:pipe:hash", "nonexistent")
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(6)
+
+  let assert [
+    resp.Integer(2),
+    resp.BulkString("value1"),
+    resp.BulkString("value2"),
+    resp.Integer(2),
+    resp.Integer(1),
+    resp.Integer(0),
+  ] = results
+}
+
+pub fn pipeline_sorted_set_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test sorted set operations in a pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.zadd(
+      "test:pipe:zset",
+      [
+        #("first", valkyrie.Double(1.0)),
+        #("second", valkyrie.Double(2.0)),
+        #("third", valkyrie.Double(3.0)),
+      ],
+      valkyrie.IfNotExistsInSet,
+      False,
+    )
+    |> pipeline.zcard("test:pipe:zset")
+    |> pipeline.zscore("test:pipe:zset", "second")
+    |> pipeline.zrank("test:pipe:zset", "first")
+    |> pipeline.zrank("test:pipe:zset", "third")
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(5)
+
+  let assert [
+    resp.Integer(3),
+    resp.Integer(3),
+    resp.Double(2.0),
+    resp.Integer(0),
+    resp.Integer(2),
+  ] = results
+}
+
+pub fn pipeline_mixed_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test a mix of different operations in a single pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.set("test:pipe:mixed:str", "hello", option.None)
+    |> pipeline.rpush("test:pipe:mixed:list", ["item1", "item2"])
+    |> pipeline.sadd("test:pipe:mixed:set", ["member1"])
+    |> pipeline.incr("test:pipe:mixed:counter")
+    |> pipeline.get("test:pipe:mixed:str")
+    |> pipeline.llen("test:pipe:mixed:list")
+    |> pipeline.scard("test:pipe:mixed:set")
+    |> pipeline.ping(option.None)
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(8)
+
+  let assert [
+    resp.SimpleString("OK"),
+    resp.Integer(2),
+    resp.Integer(1),
+    resp.Integer(1),
+    resp.BulkString("hello"),
+    resp.Integer(2),
+    resp.Integer(1),
+    resp.SimpleString("PONG"),
+  ] = results
+}
+
+pub fn pipeline_single_command_test() {
+  use conn <- get_test_conn()
+
+  // Test pipeline with just one command
+  let p = pipeline.new() |> pipeline.ping(option.None)
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(1)
+
+  let assert [resp.SimpleString("PONG")] = results
+}
+
+pub fn pipeline_empty_test() {
+  use conn <- get_test_conn()
+
+  // Test empty pipeline returns empty list immediately
+  let p = pipeline.new()
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(0)
+}
+
+pub fn pipeline_del_exists_test() {
+  use conn <- get_test_conn()
+
+  // Set up some keys first
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:pipe:del1", "value", option.None, 1000)
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:pipe:del2", "value", option.None, 1000)
+
+  // Test del and exists in pipeline
+  let p =
+    pipeline.new()
+    |> pipeline.exists(["test:pipe:del1", "test:pipe:del2"])
+    |> pipeline.del(["test:pipe:del1"])
+    |> pipeline.exists(["test:pipe:del1", "test:pipe:del2"])
+    |> pipeline.del(["test:pipe:del2", "test:pipe:nonexistent"])
+
+  let assert Ok(results) = pipeline.exec(p, conn, 1000)
+  results |> list.length |> should.equal(4)
+
+  let assert [
+    resp.Integer(2),
+    resp.Integer(1),
+    resp.Integer(1),
+    resp.Integer(1),
+  ] = results
+}
+
+// ------------------------------------ //
+// ----- Transaction functions -------- //
+// ------------------------------------ //
+
+pub fn transaction_basic_test() {
+  use conn <- get_test_conn()
+
+  // Test basic transaction with MULTI/EXEC
+  let p =
+    pipeline.new()
+    |> pipeline.set("test:tx:key1", "value1", option.None)
+    |> pipeline.set("test:tx:key2", "value2", option.None)
+    |> pipeline.get("test:tx:key1")
+    |> pipeline.get("test:tx:key2")
+
+  let assert Ok(results) = pipeline.exec_transaction(p, conn, 1000)
+
+  // exec_transaction returns only the actual results from EXEC
+  results |> list.length |> should.equal(4)
+
+  let assert [
+    resp.SimpleString("OK"),
+    resp.SimpleString("OK"),
+    resp.BulkString("value1"),
+    resp.BulkString("value2"),
+  ] = results
+}
+
+pub fn transaction_atomicity_test() {
+  use conn <- get_test_conn()
+
+  // Test that transaction executes atomically
+  // Set initial value
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:tx:atomic", "0", option.None, 1000)
+
+  // Create a transaction that increments multiple times
+  let p =
+    pipeline.new()
+    |> pipeline.incr("test:tx:atomic")
+    |> pipeline.incr("test:tx:atomic")
+    |> pipeline.incr("test:tx:atomic")
+    |> pipeline.get("test:tx:atomic")
+
+  let assert Ok(results) = pipeline.exec_transaction(p, conn, 1000)
+
+  let assert [
+    resp.Integer(1),
+    resp.Integer(2),
+    resp.Integer(3),
+    resp.BulkString("3"),
+  ] = results
+
+  // Verify final state
+  let assert Ok("3") = valkyrie.get(conn, "test:tx:atomic", 1000)
+}
+
+pub fn transaction_mixed_operations_test() {
+  use conn <- get_test_conn()
+
+  let hash_values = dict.new() |> dict.insert("name", "test")
+
+  // Test transaction with mixed operations
+  let p =
+    pipeline.new()
+    |> pipeline.set("test:tx:mixed:str", "hello", option.None)
+    |> pipeline.rpush("test:tx:mixed:list", ["a", "b"])
+    |> pipeline.hset("test:tx:mixed:hash", hash_values)
+    |> pipeline.sadd("test:tx:mixed:set", ["member"])
+    |> pipeline.incr("test:tx:mixed:counter")
+
+  let assert Ok(results) = pipeline.exec_transaction(p, conn, 1000)
+
+  results |> list.length |> should.equal(5)
+
+  let assert [
+    resp.SimpleString("OK"),
+    resp.Integer(2),
+    resp.Integer(1),
+    resp.Integer(1),
+    resp.Integer(1),
+  ] = results
+
+  // Verify all changes were applied
+  let assert Ok("hello") = valkyrie.get(conn, "test:tx:mixed:str", 1000)
+  let assert Ok(2) = valkyrie.llen(conn, "test:tx:mixed:list", 1000)
+  let assert Ok(1) = valkyrie.hlen(conn, "test:tx:mixed:hash", 1000)
+  let assert Ok(1) = valkyrie.scard(conn, "test:tx:mixed:set", 1000)
+  let assert Ok("1") = valkyrie.get(conn, "test:tx:mixed:counter", 1000)
+}
+
+pub fn transaction_single_command_test() {
+  use conn <- get_test_conn()
+
+  // Test transaction with just one command
+  let p = pipeline.new() |> pipeline.ping(option.None)
+
+  let assert Ok(results) = pipeline.exec_transaction(p, conn, 1000)
+
+  let assert [resp.SimpleString("PONG")] = results
+}
+
+pub fn transaction_empty_test() {
+  use conn <- get_test_conn()
+
+  // Test empty transaction returns empty list immediately
+  let p = pipeline.new()
+
+  let assert Ok(results) = pipeline.exec_transaction(p, conn, 1000)
+  results |> list.length |> should.equal(0)
+}
+
+pub fn transaction_list_operations_test() {
+  use conn <- get_test_conn()
+
+  // Test list operations in a transaction
+  let p =
+    pipeline.new()
+    |> pipeline.rpush("test:tx:list", ["1", "2", "3"])
+    |> pipeline.lpush("test:tx:list", ["0"])
+    |> pipeline.lrange("test:tx:list", 0, -1)
+    |> pipeline.lpop("test:tx:list", 1)
+    |> pipeline.rpop("test:tx:list", 1)
+    |> pipeline.llen("test:tx:list")
+
+  let assert Ok(results) = pipeline.exec_transaction(p, conn, 1000)
+
+  let assert [
+    resp.Integer(3),
+    resp.Integer(4),
+    resp.Array([
+      resp.BulkString("0"),
+      resp.BulkString("1"),
+      resp.BulkString("2"),
+      resp.BulkString("3"),
+    ]),
+    resp.Array([resp.BulkString("0")]),
+    resp.Array([resp.BulkString("3")]),
+    resp.Integer(2),
+  ] = results
+}
