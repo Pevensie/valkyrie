@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.1.0 - 2025-12-31
+
+- Added the new `valkyrie/pipeline` API
+
 ## 4.0.0 - 2025-08-15
 
 - Update `lpop` and `rpop` to return string arrays. Previously they would error if a
