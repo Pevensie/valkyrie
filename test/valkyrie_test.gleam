@@ -2346,3 +2346,112 @@ pub fn transaction_list_operations_test() {
     resp.Integer(2),
   ] = results
 }
+
+pub fn transaction_partial_failure_type_error_test() {
+  use conn <- get_test_conn()
+
+  // Set up a string key
+  let assert Ok("OK") =
+    valkyrie.set(conn, "test:tx:string_key", "hello", option.None, 1000)
+
+  // Try to use list operations on a string key - this will fail
+  let p =
+    pipeline.new()
+    |> pipeline.set("test:tx:success1", "value1", option.None)
+    |> pipeline.lpush("test:tx:string_key", ["item"])
+    |> pipeline.set("test:tx:success2", "value2", option.None)
+
+  let assert Ok(results) = pipeline.exec_transaction(p, conn, 1000)
+
+  // Results should contain the error for the middle command
+  let assert [
+    resp.SimpleString("OK"),
+    resp.SimpleError(error_msg),
+    resp.SimpleString("OK"),
+  ] = results
+
+  error_msg |> string.contains("WRONGTYPE") |> should.be_true
+
+  // Verify the successful commands still executed
+  let assert Ok("value1") = valkyrie.get(conn, "test:tx:success1", 1000)
+  let assert Ok("value2") = valkyrie.get(conn, "test:tx:success2", 1000)
+}
+
+// ----------------------------------------- //
+// ----- Result helper function tests ------ //
+// ----------------------------------------- //
+
+pub fn has_errors_with_no_errors_test() {
+  let results = [
+    resp.SimpleString("OK"),
+    resp.Integer(1),
+    resp.BulkString("value"),
+    resp.Array([resp.Integer(1), resp.Integer(2)]),
+  ]
+
+  pipeline.has_errors(results) |> should.be_false
+}
+
+pub fn has_errors_with_simple_error_test() {
+  let results = [
+    resp.SimpleString("OK"),
+    resp.SimpleError("ERR something went wrong"),
+    resp.SimpleString("OK"),
+  ]
+
+  pipeline.has_errors(results) |> should.be_true
+}
+
+pub fn has_errors_with_bulk_error_test() {
+  let results = [
+    resp.SimpleString("OK"),
+    resp.BulkError("ERR a longer error message"),
+    resp.SimpleString("OK"),
+  ]
+
+  pipeline.has_errors(results) |> should.be_true
+}
+
+pub fn has_errors_empty_list_test() {
+  pipeline.has_errors([]) |> should.be_false
+}
+
+pub fn to_results_all_success_test() {
+  let results = [
+    resp.SimpleString("OK"),
+    resp.Integer(42),
+    resp.BulkString("hello"),
+  ]
+
+  let converted = pipeline.to_results(results)
+
+  converted
+  |> should.equal([
+    Ok(resp.SimpleString("OK")),
+    Ok(resp.Integer(42)),
+    Ok(resp.BulkString("hello")),
+  ])
+}
+
+pub fn to_results_with_errors_test() {
+  let results = [
+    resp.SimpleString("OK"),
+    resp.SimpleError("WRONGTYPE Operation against wrong type"),
+    resp.SimpleString("OK"),
+    resp.BulkError("ERR some bulk error"),
+  ]
+
+  let converted = pipeline.to_results(results)
+
+  converted
+  |> should.equal([
+    Ok(resp.SimpleString("OK")),
+    Error("WRONGTYPE Operation against wrong type"),
+    Ok(resp.SimpleString("OK")),
+    Error("ERR some bulk error"),
+  ])
+}
+
+pub fn to_results_empty_list_test() {
+  pipeline.to_results([]) |> should.equal([])
+}
