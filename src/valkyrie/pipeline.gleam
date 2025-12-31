@@ -23,9 +23,6 @@ pub fn new() -> Pipeline {
 ///
 /// Returns a list of `resp.Value` for each command in the order they were added.
 /// Returns `Ok([])` immediately if the pipeline is empty.
-///
-/// Note: KeyDB wraps pipeline results in an outer array, while Redis returns
-/// a flat list. You may need to handle this difference in your application.
 pub fn exec(pipeline: Pipeline, conn: valkyrie.Connection, timeout: Int) {
   case pipeline.commands {
     [] -> Ok([])
@@ -64,6 +61,52 @@ pub fn exec_transaction(
       }
     }
   }
+}
+
+// -------------------------------- //
+// ----- Result helper functions -- //
+// -------------------------------- //
+
+/// Check if any results from a pipeline or transaction contain errors.
+///
+/// This is useful for quickly determining if any commands failed without
+/// inspecting each result individually.
+///
+/// ## Example
+///
+/// ```gleam
+/// let assert Ok(results) = pipeline.exec(p, conn, 1000)
+/// case pipeline.has_errors(results) {
+///   True -> io.println("Some commands failed")
+///   False -> io.println("All commands succeeded")
+/// }
+/// ```
+pub fn has_errors(results: List(resp.Value)) -> Bool {
+  list.any(results, resp.is_error)
+}
+
+/// Convert a list of pipeline results to a list of Results, turning
+/// `SimpleError` and `BulkError` values into `Error` variants.
+///
+/// This makes it easier to work with pipeline results using standard
+/// Result functions like `result.try`, `list.all`, or `result.partition`.
+///
+/// ## Example
+///
+/// ```gleam
+/// let assert Ok(results) = pipeline.exec(p, conn, 1000)
+/// let #(successes, failures) =
+///   results
+///   |> pipeline.to_results
+///   |> result.partition
+/// ```
+pub fn to_results(results: List(resp.Value)) -> List(Result(resp.Value, String)) {
+  list.map(results, fn(value) {
+    case value {
+      resp.SimpleError(msg) | resp.BulkError(msg) -> Error(msg)
+      other -> Ok(other)
+    }
+  })
 }
 
 // ---------------------------- //

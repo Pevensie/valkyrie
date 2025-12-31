@@ -66,6 +66,17 @@ pub fn error_string(expected expected: String, got got: List(Value)) -> String {
   "Expected " <> expected <> ", got " <> values_to_names(got)
 }
 
+/// Check if a RESP value is an error type.
+///
+/// Returns `True` for `SimpleError` and `BulkError` values, `False` for all
+/// other value types.
+pub fn is_error(value: Value) -> Bool {
+  case value {
+    SimpleError(_) | BulkError(_) -> True
+    _ -> False
+  }
+}
+
 // ----- Encoding ----- //
 
 @internal
