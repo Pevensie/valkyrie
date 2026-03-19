@@ -121,6 +121,18 @@ pub fn url_config_with_auth_test() {
   config2.auth |> should.equal(valkyrie.UsernameAndPassword("user", "pass"))
 }
 
+pub fn url_config_with_auth_colon_in_password_test() {
+  // Password only with colons
+  let assert Ok(config1) = valkyrie.url_config("redis://:p:a:ss@localhost:6379")
+  config1.auth |> should.equal(valkyrie.PasswordOnly("p:a:ss"))
+
+  // Username and password with colons in password
+  let assert Ok(config2) =
+    valkyrie.url_config("redis://user:p:a:ss@localhost:6379")
+  config2.auth
+  |> should.equal(valkyrie.UsernameAndPassword("user", "p:a:ss"))
+}
+
 pub fn url_config_error_cases_test() {
   let assert Error(valkyrie.UnsupportedScheme) =
     valkyrie.url_config("http://localhost:6379")
