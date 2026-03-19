@@ -202,14 +202,12 @@ pub fn url_config(url: String) -> Result(Config, UrlParseError) {
 
   // Extract authentication from userinfo
   let auth = case parsed_uri.userinfo {
+    option.Some("") -> NoAuth
     option.Some(userinfo) -> {
-      case string.split(userinfo, ":") {
-        ["", password] -> PasswordOnly(password)
-        [username, password] -> UsernameAndPassword(username, password)
-        [password] -> PasswordOnly(password)
-        [] -> NoAuth
-        _ -> NoAuth
-        // fallback for malformed userinfo
+      case string.split_once(userinfo, ":") {
+        Ok(#("", password)) -> PasswordOnly(password)
+        Ok(#(username, password)) -> UsernameAndPassword(username, password)
+        Error(Nil) -> PasswordOnly(userinfo)
       }
     }
     option.None -> NoAuth
