@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.1.1 - 2026-04-26
+
+- Fixed a bug causing `:` characters in passwords to force `NoAuth` (thanks [@jtdowney](https://github.com/jtdowney)!)
+
 ## 4.1.0 - 2025-12-31
 
 - Added the new `valkyrie/pipeline` API
