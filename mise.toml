@@ -1,5 +1,5 @@
 [tools]
-gleam = "1.11.1"
+gleam = "latest"
 
 [tasks.test]
 run = [
