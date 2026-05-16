@@ -28,9 +28,13 @@ pub type Auth {
   UsernameAndPassword(username: String, password: String)
 }
 
+/// The message type used by the underlying Bath pool. Exported for convenience.
+pub type Msg =
+  bath.Msg(mug.Socket)
+
 pub opaque type Connection {
   Single(socket: mug.Socket)
-  Pooled(process.Subject(bath.Msg(mug.Socket)))
+  Pooled(process.Subject(Msg))
 }
 
 pub type PoolError {
@@ -269,7 +273,7 @@ fn create_pool_builder(
   config: Config,
   pool_size: Int,
   init_timeout: Int,
-  pool_name: option.Option(process.Name(bath.Msg(mug.Socket))),
+  pool_name: option.Option(process.Name(Msg)),
 ) -> bath.Builder(mug.Socket) {
   let pool_builder =
     bath.new(fn() {
@@ -301,7 +305,7 @@ fn create_pool_builder(
 pub fn start_pool(
   config config: Config,
   size pool_size: Int,
-  name pool_name: option.Option(process.Name(bath.Msg(mug.Socket))),
+  name pool_name: option.Option(process.Name(Msg)),
   timeout init_timeout: Int,
 ) -> Result(Connection, StartError) {
   use pool <- result.try(
@@ -373,7 +377,7 @@ pub fn start_pool(
 pub fn supervised_pool(
   config config: Config,
   size pool_size: Int,
-  name pool_name: option.Option(process.Name(bath.Msg(mug.Socket))),
+  name pool_name: option.Option(process.Name(Msg)),
   timeout init_timeout: Int,
 ) -> supervision.ChildSpecification(Connection) {
   create_pool_builder(config, pool_size, init_timeout, pool_name)
@@ -382,7 +386,7 @@ pub fn supervised_pool(
 }
 
 /// Create a connection from the process name given to the connection pool.
-pub fn named_connection(name: process.Name(bath.Msg(mug.Socket))) -> Connection {
+pub fn named_connection(name: process.Name(Msg)) -> Connection {
   Pooled(process.named_subject(name))
 }
 

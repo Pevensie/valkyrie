@@ -1,12 +1,16 @@
 # Changelog
 
+## 4.2.0 - 2026-05-16
+
+- Export `valkyrie.Msg` as a convenience alias for `bath.Msg(mug.Socket)`.
+
 ## 4.1.1 - 2026-04-26
 
-- Fixed a bug causing `:` characters in passwords to force `NoAuth` (thanks [@jtdowney](https://github.com/jtdowney)!)
+- Fixed a bug causing `:` characters in passwords to force `NoAuth` (thanks [@jtdowney](https://github.com/jtdowney)!).
 
 ## 4.1.0 - 2025-12-31
 
-- Added the new `valkyrie/pipeline` API
+- Added the new `valkyrie/pipeline` API.
 
 ## 4.0.0 - 2025-08-15
 
